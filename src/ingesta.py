@@ -8,11 +8,9 @@ import duckdb
 from datetime import datetime
 import argparse
 import sys
+from src.config import DATA_RAW, DB_PATH
 
 BASE_URL = "https://d37ci6vzurychx.cloudfront.net"
-RAIZ = Path(__file__).resolve().parent.parent      # raíz del repo
-DATA_RAW = RAIZ / "data" / "raw"
-DB_PATH = RAIZ / "data" / "pipeline.duckdb"
 URL_ZONAS = f"{BASE_URL}/misc/taxi_zone_lookup.csv"
 RUTA_ZONAS = DATA_RAW / "zones" / "taxi_zone_lookup.csv"
 
