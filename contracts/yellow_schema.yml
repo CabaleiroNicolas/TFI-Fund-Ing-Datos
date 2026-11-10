@@ -1,0 +1,35 @@
+version: 1
+dataset: yellow_taxi_trips
+descripcion: Contrato de esquema destino de los viajes de taxi amarillo (TLC).
+
+politicas:
+  columna_faltante_requerida: error          # aborta ese archivo
+  columna_faltante_opcional: usar_default    # usa default_si_falta
+  columna_nueva_no_contratada: advertir_e_ignorar   # PENDIENTE DE REVISION
+  tipo_distinto: castear_si_es_seguro_sino_error
+
+columnas:
+  - {nombre: vendor_id,             origen: VendorID,              tipo: INTEGER,   requerida: true}
+  - {nombre: tpep_pickup_datetime,  origen: tpep_pickup_datetime,  tipo: TIMESTAMP, requerida: true}
+  - {nombre: tpep_dropoff_datetime, origen: tpep_dropoff_datetime, tipo: TIMESTAMP, requerida: true}
+  - {nombre: passenger_count,       origen: passenger_count,       tipo: BIGINT,    requerida: true}
+  - {nombre: trip_distance,         origen: trip_distance,         tipo: DOUBLE,    requerida: true}
+  - {nombre: ratecode_id,           origen: RatecodeID,            tipo: BIGINT,    requerida: true}
+  - {nombre: store_and_fwd_flag,    origen: store_and_fwd_flag,    tipo: VARCHAR,   requerida: true}
+  - {nombre: pu_location_id,        origen: PULocationID,          tipo: INTEGER,   requerida: true}
+  - {nombre: do_location_id,        origen: DOLocationID,          tipo: INTEGER,   requerida: true}
+  - {nombre: payment_type,          origen: payment_type,          tipo: BIGINT,    requerida: true}
+  - {nombre: fare_amount,           origen: fare_amount,           tipo: DOUBLE,    requerida: true}
+  - {nombre: extra,                 origen: extra,                 tipo: DOUBLE,    requerida: true}
+  - {nombre: mta_tax,               origen: mta_tax,               tipo: DOUBLE,    requerida: true}
+  - {nombre: tip_amount,            origen: tip_amount,            tipo: DOUBLE,    requerida: true}
+  - {nombre: tolls_amount,          origen: tolls_amount,          tipo: DOUBLE,    requerida: true}
+  - {nombre: improvement_surcharge, origen: improvement_surcharge, tipo: DOUBLE,    requerida: true}
+  - {nombre: total_amount,          origen: total_amount,          tipo: DOUBLE,    requerida: true}
+  - {nombre: congestion_surcharge,  origen: congestion_surcharge,  tipo: DOUBLE,    requerida: true}
+  - {nombre: airport_fee,           origen: Airport_fee,           tipo: DOUBLE,    requerida: true}
+  - nombre: cbd_congestion_fee
+    origen: cbd_congestion_fee
+    tipo: DOUBLE
+    requerida: false              # no existe en archivos anteriores a 2025
+    default_si_falta: null        # decision: NULL, no 0 (ver README)
