@@ -8,11 +8,10 @@ import duckdb
 from datetime import datetime
 import argparse
 import sys
-from src.config import DATA_RAW, DB_PATH
+from src.config import DATA_RAW, DB_PATH, RUTA_ZONAS
 
 BASE_URL = "https://d37ci6vzurychx.cloudfront.net"
 URL_ZONAS = f"{BASE_URL}/misc/taxi_zone_lookup.csv"
-RUTA_ZONAS = DATA_RAW / "zones" / "taxi_zone_lookup.csv"
 
 
 def armar_url(anio: int, mes: int) -> str:
@@ -151,6 +150,18 @@ def parsear_mes(texto: str) -> tuple[int, int]:
     return anio, mes
 
 
+def ingestar(con, anio: int, mes: int) -> None:
+    # Descarga (si hace falta) la tabla de zonas, el mes pedido y el mismo mes del año anterior.
+    pedidos = [
+        (URL_ZONAS, RUTA_ZONAS),
+        (armar_url(anio, mes), armar_ruta(anio, mes)),
+        (armar_url(anio - 1, mes), armar_ruta(anio - 1, mes)),   # mismo mes del año anterior
+    ]
+    for url, destino in pedidos:
+        resultado = ingestar_archivo(con, url, destino)
+        print(f"{destino.name}: {resultado}")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Ingesta de viajes de taxi amarillo (TLC).")
     parser.add_argument("--mes", required=True, type=parsear_mes,
@@ -159,18 +170,13 @@ def main(argv=None) -> int:
     anio, mes = args.mes
 
     con = conectar()
-    pedidos = [
-        (URL_ZONAS, RUTA_ZONAS),
-        (armar_url(anio, mes), armar_ruta(anio, mes)),
-        (armar_url(anio - 1, mes), armar_ruta(anio - 1, mes)),   # mismo mes del año anterior
-    ]
-    for url, destino in pedidos:
-        try:
-            resultado = ingestar_archivo(con, url, destino)
-            print(f"{destino.name}: {resultado}")
-        except Exception as error:
-            print(f"ERROR en {destino.name}: {error}", file=sys.stderr)
-            return 1
+    try:
+        ingestar(con, anio, mes)
+    except Exception as error:
+        print(f"ERROR en la ingesta: {error}", file=sys.stderr)
+        return 1
+    finally:
+        con.close()
     return 0
 
 

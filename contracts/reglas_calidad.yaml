@@ -1,0 +1,81 @@
+version: 1
+descripcion: >-
+  Reglas de calidad sobre los viajes. Cada condición es SQL y es verdadera
+  cuando la fila VIOLA la regla. Las de severidad rechazo mandan la fila a
+  cuarentena; las de advertencia solo la marcan.
+
+# Marcadores que se pueden usar en las condiciones:
+#   {inicio_mes} y {fin_mes}  límites del mes del archivo (el fin no se incluye)
+#   {umbral}                  el valor del campo umbral de la propia regla
+#   {columnas}                todas las columnas del contrato, separadas por coma
+
+reglas:
+  - id: R01
+    descripcion: La fecha de subida cae fuera del mes del archivo.
+    severidad: rechazo
+    umbral: null
+    condicion: "tpep_pickup_datetime < {inicio_mes} OR tpep_pickup_datetime >= {fin_mes}"
+    justificacion: Tolerancia 0. El archivo de un mes solo debería traer viajes de ese mes.
+
+  - id: R02
+    descripcion: La bajada es anterior o igual a la subida.
+    severidad: rechazo
+    umbral: null
+    condicion: "tpep_dropoff_datetime <= tpep_pickup_datetime"
+    justificacion: Un viaje no puede terminar antes de empezar ni tener duración cero.
+
+  - id: R03
+    descripcion: La distancia es menor o igual a cero.
+    severidad: rechazo
+    umbral: 0
+    condicion: "trip_distance <= {umbral}"
+    justificacion: Un viaje registrado tiene que haber recorrido alguna distancia.
+
+  - id: R04
+    descripcion: La distancia supera el máximo razonable (en millas).
+    severidad: rechazo
+    umbral: 100
+    condicion: "trip_distance > {umbral}"
+    justificacion: La mediana es 1,8 millas y el percentil 99,9 ronda las 29. Más de 100 millas queda muy fuera de lo posible para un taxi de la ciudad.
+
+  - id: R05
+    descripcion: El importe total es negativo.
+    severidad: rechazo
+    umbral: 0
+    condicion: "total_amount < {umbral}"
+    justificacion: Un total negativo no representa un viaje cobrado.
+
+  - id: R06
+    descripcion: La cantidad de pasajeros es nula o cero.
+    severidad: advertencia
+    umbral: null
+    condicion: "passenger_count IS NULL OR passenger_count = 0"
+    justificacion: Entre el 13 y el 23 % de las filas, según el mes, casi todas con payment_type 0. Descartarlas borraría una parte enorme de los datos, así que solo se marcan.
+
+  - id: R07
+    descripcion: La zona de origen o de destino no existe en la tabla de zonas.
+    severidad: rechazo
+    umbral: null
+    condicion: "coalesce(pu_location_id NOT IN (SELECT zona_id FROM zonas), true) OR coalesce(do_location_id NOT IN (SELECT zona_id FROM zonas), true)"
+    justificacion: Sin zona válida no se puede enriquecer ni asignar el viaje a ningún barrio. Un valor nulo cuenta como inexistente.
+
+  - id: R08
+    descripcion: La fila es un duplicado exacto de otra (se conserva la primera copia).
+    severidad: rechazo
+    umbral: null
+    condicion: "row_number() OVER (PARTITION BY {columnas}) > 1"
+    justificacion: Dos filas iguales en todas las columnas son el mismo viaje cargado dos veces. Como las copias son idénticas, da igual cuál se conserve.
+
+  - id: R09
+    descripcion: La velocidad promedio implícita supera el máximo razonable (en mph).
+    severidad: rechazo
+    umbral: 100
+    condicion: "trip_distance / NULLIF(date_diff('second', tpep_pickup_datetime, tpep_dropoff_datetime) / 3600.0, 0) > {umbral}"
+    justificacion: Regla propia, descubierta al explorar. Un taxi urbano no puede promediar más de 100 mph, así que distancia y duración son inconsistentes.
+
+  - id: R10
+    descripcion: La zona de origen o de destino es 264 o 265 (desconocida).
+    severidad: advertencia
+    umbral: "264, 265"
+    condicion: "pu_location_id IN ({umbral}) OR do_location_id IN ({umbral})"
+    justificacion: Regla propia. Son códigos válidos de la tabla pero sin ubicación real; el viaje es utilizable, solo se marca.
