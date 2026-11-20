@@ -1,0 +1,25 @@
+services:
+  pipeline:
+    build: .
+    container_name: nyc-taxi-pipeline
+    init: true             # un proceso mínimo como PID 1: el contenedor responde rápido a make down
+    command: ["--mes", "${MES:-sin-mes}"]
+    mem_limit: 6g          # tope de memoria del contenedor: si el pipeline lo supera, Docker lo corta
+    memswap_limit: 6g      # sin swap: el límite es real
+    user: "${HOST_UID:-0}:${HOST_GID:-0}"   # en Linux, lanzar.py pasa tu usuario: los archivos de data/ quedan a tu nombre
+    volumes:
+      - ./data:/app/data   # la misma carpeta data/ que usa la corrida local
+
+  dozzle:
+    image: amir20/dozzle:latest
+    ports:
+      - "127.0.0.1:8080:8080"   # http://localhost:8080, accesible solo desde esta máquina (no desde la red)
+    environment:
+      DOZZLE_NO_ANALYTICS: "true"           # sin analíticas, igual que dlt y dbt
+      DOZZLE_DISABLE_SETUP_WIZARD: "true"   # que al abrirlo no pida configurar nada: ya viene listo
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # de acá lee los logs de los contenedores
+      - dozzle_datos:/data                             # sus preferencias sobreviven a make down
+
+volumes:
+  dozzle_datos:
