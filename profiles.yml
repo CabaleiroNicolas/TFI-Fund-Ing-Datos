@@ -1,0 +1,9 @@
+nyc_taxi:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: data/modelo.duckdb
+      threads: 1
+      settings:
+        memory_limit: 4GB

@@ -1,0 +1,12 @@
+name: nyc_taxi
+version: "1.0"
+profile: nyc_taxi
+model-paths: ["sql/modelo"]
+test-paths: ["sql/tests"]
+
+flags:
+  send_anonymous_usage_stats: false
+
+models:
+  nyc_taxi:
+    +materialized: table

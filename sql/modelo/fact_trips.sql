@@ -1,0 +1,31 @@
+-- Tabla de hechos: una fila por viaje aceptado de la capa curada.
+-- Se quitan las columnas que ya salen de las dimensiones (nombres de zona, día de la semana).
+select
+    fecha_subida as fecha,
+    hora_subida as hora,
+    pu_location_id as pu_zona_id,
+    do_location_id as do_zona_id,
+    vendor_id,
+    ratecode_id,
+    payment_type,
+    store_and_fwd_flag,
+    tpep_pickup_datetime,
+    tpep_dropoff_datetime,
+    passenger_count,
+    trip_distance,
+    duracion_min,
+    velocidad_mph,
+    fare_amount,
+    extra,
+    mta_tax,
+    tip_amount,
+    tolls_amount,
+    improvement_surcharge,
+    congestion_surcharge,
+    airport_fee,
+    cbd_congestion_fee,
+    total_amount,
+    propina_pct,
+    flags,
+    archivo_origen
+from {{ source('curado', 'viajes') }}

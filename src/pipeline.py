@@ -1,4 +1,4 @@
-# Orquesta las etapas del pipeline para un mes: ingesta, esquema, calidad y curado.
+# Orquesta las etapas del pipeline para un mes: ingesta, esquema, calidad, curado, modelo y preguntas.
 import resource
 import sys
 import time
@@ -7,6 +7,8 @@ from src.e1_ingesta import armar_ruta, conectar, contar_filas, ingestar
 from src.e2_esquema import cargar_contrato, crear_vista_unificada
 from src.e3_calidad import cargar_reglas, consulta_del_mes, crear_vista_zonas, miles, procesar_calidad
 from src.e4_transformacion import curar_mes
+from src.e5_modelo import construir_modelo, mostrar_resumen
+from src.e6_preguntas import correr_preguntas, guardar_informe, mostrar_resultados
 
 LIMITE_MEMORIA = "4GB"
 
@@ -44,16 +46,31 @@ def etapa_curado(con, anio: int, mes: int) -> None:
         print(f"curado {a}-{m:02d}: {miles(filas)} filas")
 
 
+def etapa_modelo(con, anio: int, mes: int) -> None:
+    # Construye el modelo estrella con dbt sobre toda la capa curada (no depende del mes pedido).
+    mostrar_resumen(construir_modelo())
+
+
+def etapa_preguntas(con, anio: int, mes: int) -> None:
+    # Responde las preguntas de negocio sobre el modelo para el mes pedido y su mes de comparación.
+    resultados = correr_preguntas(anio, mes)
+    mostrar_resultados(resultados)
+    print(f"\n   informe guardado en {guardar_informe(resultados, anio, mes)}")
+
+
 ETAPAS = [
     ("ingesta", etapa_ingesta),
     ("esquema", etapa_esquema),
     ("calidad", etapa_calidad),
     ("curado", etapa_curado),
+    ("modelo", etapa_modelo),
+    ("preguntas", etapa_preguntas),
 ]
 
 
 def pico_ram_mb() -> float:
-    pico = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # El proceso más grande entre este y sus hijos (dbt corre aparte).
+    pico = max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
     return pico / (1024 * 1024) if sys.platform == "darwin" else pico / 1024   # macOS lo da en bytes, Linux en KB
 
 

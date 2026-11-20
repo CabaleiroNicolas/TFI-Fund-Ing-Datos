@@ -2,3 +2,8 @@ duckdb==2.0.0
 pytest==9.2.0
 PyYAML==6.0.3
 requests==2.34.2
+dlt[parquet,filesystem]==1.32.0
+pyarrow==26.0.1
+psutil==7.2.2
+dbt-core==1.12.7
+dbt-duckdb==1.11.1

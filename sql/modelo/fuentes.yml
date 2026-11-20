@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Tabla de zonas de la TLC, tal como quedó en data/raw.
+    meta:
+      external_location: "read_csv('data/raw/zones/taxi_zone_lookup.csv')"
+    tables:
+      - name: zonas
+      
+  - name: curado
+    description: Capa curada en Parquet, particionada por year y month (salida de la etapa de transformación).
+    meta:
+      external_location: "read_parquet('data/curado/**/*.parquet', hive_partitioning = true)"
+    tables:
+      - name: viajes

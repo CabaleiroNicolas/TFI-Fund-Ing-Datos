@@ -1,0 +1,56 @@
+version: 2
+
+models:
+  - name: dim_zone
+    description: Una fila por zona de la TLC.
+    columns:
+      - name: zona_id
+        description: LocationID de la TLC.
+        data_tests: [unique, not_null]
+
+  - name: dim_date
+    description: Una fila por día calendario de cada mes presente en la capa curada.
+    columns:
+      - name: fecha
+        description: Día calendario. Es la clave de la tabla.
+        data_tests: [unique, not_null]
+      - name: dia_semana
+        description: Día de la semana en formato ISO (1 = lunes, 7 = domingo).
+
+  - name: fact_trips
+    description: Una fila por viaje aceptado. Cada fila lleva la fecha, la hora y las zonas de origen y destino.
+    columns:
+      - name: fecha
+        description: Fecha de subida. Apunta a dim_date.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: fecha
+      - name: pu_zona_id
+        description: Zona de origen. Apunta a dim_zone.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_zone')
+                field: zona_id
+      - name: do_zona_id
+        description: Zona de destino. Apunta a dim_zone.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_zone')
+                field: zona_id
+
+  - name: agg_zone_hour
+    description: Una fila por zona de origen, fecha y hora de subida.
+    columns:
+      - name: pu_zona_id
+        data_tests: [not_null]
+      - name: fecha
+        data_tests: [not_null]
+      - name: hora
+        data_tests: [not_null]
