@@ -277,17 +277,21 @@ def parsear_mes(texto: str) -> tuple[int, int]:
     return anio, mes
 
 
-def ingestar(con, anio: int, mes: int) -> None:
+def ingestar(con, anio: int, mes: int) -> list:
     # Carga (si hace falta) la tabla de zonas, el mes pedido y el mismo mes del año anterior.
+    # Devuelve [(archivo, "descargado" | "omitido"), ...].
     pedidos = [
         (URL_ZONAS, RUTA_ZONAS, cargar_zonas),
         (armar_url(anio, mes), armar_ruta(anio, mes), partial(cargar_viajes, anio=anio, mes=mes)),
         (armar_url(anio - 1, mes), armar_ruta(anio - 1, mes),
          partial(cargar_viajes, anio=anio - 1, mes=mes)),   # mismo mes del año anterior
     ]
+    resultados = []
     for url, destino, cargar in pedidos:
         resultado = ingestar_archivo(con, url, destino, cargar)
         print(f"{destino.name}: {resultado}")
+        resultados.append((destino.name, resultado))
+    return resultados
 
 
 def main(argv=None) -> int:
