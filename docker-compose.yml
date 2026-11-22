@@ -1,14 +1,37 @@
 services:
   pipeline:
     build: .
+    image: nyc-taxi-pipeline   # el mismo nombre en los dos servicios: se construye una vez y lo usan ambos
     container_name: nyc-taxi-pipeline
     init: true             # un proceso mínimo como PID 1: el contenedor responde rápido a make down
-    command: ["--mes", "${MES:-sin-mes}"]
+    command: ["--mes", "${MES:-sin-mes}", "--dagster"]   # --dagster: las etapas corren como una corrida de Dagster
     mem_limit: 6g          # tope de memoria del contenedor: si el pipeline lo supera, Docker lo corta
     memswap_limit: 6g      # sin swap: el límite es real
     user: "${HOST_UID:-0}:${HOST_GID:-0}"   # en Linux, lanzar.py pasa tu usuario: los archivos de data/ quedan a tu nombre
     volumes:
-      - ./data:/app/data   # la misma carpeta data/ que usa la corrida local
+      - ./data:/app/data   # la misma carpeta data/ que usa la corrida local (y donde Dagster guarda su historial)
+
+  dagster:
+    build: .
+    image: nyc-taxi-pipeline
+    container_name: nyc-taxi-dagster
+    init: true
+    entrypoint: ["python", "-m", "src.orquestacion"]
+    command: ["web"]       # la interfaz web de Dagster; lee el historial que escribe el contenedor del pipeline
+    environment:
+      MES: "${MES:-}"      # el mes por defecto de las corridas que se lancen desde la interfaz
+    ports:
+      - "127.0.0.1:3000:3000"   # http://localhost:3000, accesible solo desde esta máquina (no desde la red)
+    mem_limit: 2g
+    user: "${HOST_UID:-0}:${HOST_GID:-0}"
+    volumes:
+      - ./data:/app/data   # mismo historial (data/dagster_home) que el contenedor del pipeline
+    healthcheck:           # lanzar.py espera a que esté sano antes de correr el pipeline
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:3000/server_info')"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 5s
 
   dozzle:
     image: amir20/dozzle:latest

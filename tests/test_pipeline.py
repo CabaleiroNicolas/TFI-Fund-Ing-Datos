@@ -2,6 +2,7 @@
 # proyecto, y revisan las métricas que deja el log.
 import hashlib
 import json
+import os
 from functools import partial
 import shutil
 import subprocess
@@ -200,3 +201,30 @@ def test_solo_dbt_y_las_preguntas_corren_sin_la_base():
     assert [(nombre, usa_base) for nombre, _, usa_base in ORIGINALES] == [
         ("ingesta", True), ("esquema", True), ("calidad", True), ("curado", True),
         ("modelo", False), ("preguntas", False)]
+
+
+def test_un_ctrl_c_en_una_etapa_deja_la_corrida_como_fallida(pipeline_falso, tmp_path):
+    def interrumpida(con, anio, mes):
+        raise KeyboardInterrupt
+
+    pipeline.ETAPAS[:] = [("a", interrumpida, True)]
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            pipeline.ejecutar(2025, 3)
+    finally:
+        pipeline.ETAPAS[:] = ORIGINALES
+    final = [json.loads(linea) for linea in (tmp_path / "2025-03.jsonl").read_text(encoding="utf-8").splitlines()][-1]
+    assert final["evento"] == "corrida_fin" and final["estado"] == "error"
+    assert pipeline_falso.cerradas == 1
+
+
+def test_pedir_dagster_sin_tenerlo_instalado_da_un_mensaje_claro_y_no_un_traceback(tmp_path):
+    # Simula que 'import dagster' falla: un paquete falso que se adelanta en el camino de búsqueda.
+    falso = tmp_path / "falso"
+    (falso / "dagster").mkdir(parents=True)
+    (falso / "dagster" / "__init__.py").write_text("raise ImportError('simulado: Dagster no está instalado')")
+    proceso = subprocess.run([sys.executable, "run.py", "--mes", "2025-03", "--dagster"], cwd=RAIZ, capture_output=True,
+                             text=True, timeout=120, env={**os.environ, "PYTHONPATH": str(falso)})
+    assert proceso.returncode == 1
+    assert "necesita Dagster" in proceso.stderr and "requirements-dagster.txt" in proceso.stderr
+    assert "Traceback" not in proceso.stderr

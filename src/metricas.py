@@ -117,11 +117,14 @@ def _valor(valor) -> str:
     return texto
 
 
+def clave_valor(campos: dict) -> str:
+    return " ".join(f"{clave}={_valor(valor)}" for clave, valor in campos.items())
+
+
 class FormatoClaveValor(logging.Formatter):
     # ts=2026-11-22T00:24:12-03:00 level=INFO etapa=ingesta evento=fin duracion_s=9.6 ...
     def format(self, registro: logging.LogRecord) -> str:
-        campos = {"ts": _hora(registro), "level": registro.levelname, **registro.campos}
-        return " ".join(f"{clave}={_valor(valor)}" for clave, valor in campos.items())
+        return clave_valor({"ts": _hora(registro), "level": registro.levelname, **registro.campos})
 
 
 class FormatoJson(logging.Formatter):

@@ -1,6 +1,6 @@
-# Punto de entrada de `make all`: corre el pipeline en Docker (con Dozzle para ver los logs) y, si Docker
-# no está disponible o no se puede armar, lo corre directo con Python como siempre.
-# En Docker el contenedor queda encendido al terminar, para seguir mirando sus logs en Dozzle.
+# Punto de entrada de `make all`: corre el pipeline en Docker (orquestado por Dagster, con Dozzle para ver los logs)
+# y, si Docker no está disponible o no se puede armar, lo corre directo con Python como siempre.
+# En Docker los contenedores quedan encendidos al terminar, para seguir mirando los logs en Dozzle y en Dagster.
 # Usa solo la biblioteca estándar, así arranca aunque todavía no estén instaladas las dependencias.
 import argparse
 import importlib.util
@@ -49,6 +49,13 @@ def correr_en_docker(mes: str):
         print("[aviso] no se pudo levantar Dozzle: el pipeline sigue, pero sin la pantalla de logs.")
     else:
         print("Logs en vivo en Dozzle: http://localhost:8080")
+    # La interfaz de Dagster se espera hasta que esté sana: así la instancia (data/dagster_home) ya está lista cuando
+    # el pipeline empieza a escribir en ella.
+    if correr(["docker", "compose", "up", "-d", "--wait", "--wait-timeout", "120", "dagster"], env=entorno).returncode != 0:
+        print("[aviso] no se pudo levantar la interfaz de Dagster: el pipeline corre igual y deja su historial "
+              "en data/dagster_home.")
+    else:
+        print("Corridas y logs de Dagster: http://localhost:3000")
 
     correr(["docker", "rm", "-f", CONTENEDOR], capture_output=True)            # el de la corrida anterior, si quedó
     if correr(["docker", "compose", "up", "-d", "--no-deps", "pipeline"], env=entorno).returncode != 0:
@@ -58,7 +65,7 @@ def correr_en_docker(mes: str):
     # El contenedor queda encendido al terminar: se sigue su log hasta que el pipeline avisa que terminó.
     codigo = seguir_logs()
     if codigo is not None:
-        print("El contenedor sigue encendido para consultar los logs (Dozzle). Para apagarlo: make down")
+        print("Los contenedores siguen encendidos para consultar los logs (Dozzle y Dagster). Para apagarlos: make down")
         return codigo
     # Se cortó el log sin ese aviso: el contenedor murió (por ejemplo, por memoria) o nunca llegó a ejecutarse.
     estado = correr(["docker", "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}", CONTENEDOR],

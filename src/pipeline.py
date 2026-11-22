@@ -97,32 +97,55 @@ ETAPAS = [
 ]
 
 
+class Sesion:
+    # Una corrida de un mes: la base del pipeline, la medición (src/metricas.py) y las reglas de cuándo se cierra cada cosa.
+    # La usan las dos formas de correr el pipeline: ejecutar() (directo) y los assets de Dagster (src/orquestacion.py).
+    def __init__(self, anio: int, mes: int):
+        self.anio, self.mes = anio, mes
+        self.corrida = Corrida(anio, mes)
+        self.con = None
+        self.error = None
+
+    def abrir(self) -> None:
+        self.corrida.iniciar()
+        self.con = conectar()
+        self.con.execute(f"SET memory_limit = '{LIMITE_MEMORIA}'")
+
+    def correr_etapa(self, nombre: str, etapa, usa_base: bool) -> dict:
+        # Corre una etapa midiéndola. Devuelve lo que midió y lo que la etapa procesó. Si falla, el error dice cuál fue.
+        if self.con is not None and not usa_base:
+            # Aunque ya no se use, la conexión retiene gigas de memoria (medido: unos 2,4 GB después de calidad y
+            # curado). dbt arranca ahora, y si la conexión sigue abierta las dos memorias se suman.
+            self.con.close()
+            self.con = None
+        print(f"== etapa: {nombre} ==")
+        with self.corrida.etapa(nombre) as medidor:
+            try:
+                medidor.datos = etapa(self.con, self.anio, self.mes)
+            except Exception as error:
+                self.error = RuntimeError(f"falló la etapa '{nombre}': {error}")
+                raise self.error from error
+            except BaseException as error:       # Ctrl+C y similares: no se envuelven, pero la corrida cuenta como fallida
+                self.error = error
+                raise
+        return medidor.resultado
+
+    def cerrar(self) -> dict:
+        # Cierra la base y deja el resumen y el evento final, con el error si alguna etapa falló.
+        if self.con is not None:
+            self.con.close()
+            self.con = None
+        return self.corrida.terminar(self.error)
+
+
 def ejecutar(anio: int, mes: int) -> None:
     # Corre las etapas en orden. Si una falla, se corta ahí y el error dice cuál fue.
     # La corrida deja sus métricas en el log (ver src/metricas.py) aunque falle.
-    corrida = Corrida(anio, mes)
-    corrida.iniciar()
-    con = conectar()
-    con.execute(f"SET memory_limit = '{LIMITE_MEMORIA}'")
-    error = None
+    sesion = Sesion(anio, mes)
+    sesion.abrir()
     try:
         for nombre, etapa, usa_base in ETAPAS:
-            if con is not None and not usa_base:
-                # Aunque ya no se use, la conexión retiene gigas de memoria (medido: unos 2,4 GB después de calidad y
-                # curado). dbt arranca ahora, y si la conexión sigue abierta las dos memorias se suman.
-                con.close()
-                con = None
-            print(f"== etapa: {nombre} ==")
-            with corrida.etapa(nombre) as medidor:
-                try:
-                    medidor.datos = etapa(con, anio, mes)
-                except Exception as e:
-                    raise RuntimeError(f"falló la etapa '{nombre}': {e}") from e
-    except BaseException as e:
-        error = e
-        raise
+            sesion.correr_etapa(nombre, etapa, usa_base)
     finally:
-        if con is not None:
-            con.close()
-        total = corrida.terminar(error)
+        total = sesion.cerrar()
     print(f"Listo en {total['duracion_s']:.1f} s. Pico de RAM: {total['pico_ram_mb']} MB")
