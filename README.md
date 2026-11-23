@@ -1,21 +1,26 @@
 # Pipeline NYC Taxi
 
-Trabajo final de Fundamentos de la Ingeniería de Datos. Es un pipeline batch que baja los viajes de taxi amarillo de Nueva York (TLC) de un mes y del mismo mes del año anterior, los valida, los limpia, arma un modelo estrella y responde las preguntas de negocio. Todo se corre con un solo comando: `make all MES=AAAA-MM`.
+Integrantes:
+
+- Cabaleiro Nicolas - 53136
+- Argañaraz Vargas Angelica - 53492
+
+Trabajo final de Fundamentos de la Ingeniería de Datos. Es un pipeline batch que baja los viajes de yellow taxi de Nueva York (TLC) de un mes y del mismo mes del año anterior, los valida, los limpia, arma un modelo estrella y responde las preguntas de negocio. Todo se corre con un solo comando: `make all MES=AAAA-MM`.
 
 ## Stack
 
 | Herramienta | Para qué | Por qué esa |
 |---|---|---|
 | Python 3.10+ | Todo el pipeline | Es el lenguaje en el que están las otras herramientas, y para lo demás alcanza con la biblioteca estándar |
-| dlt | Ingesta | La cátedra pidió una herramienta de ingesta aparte de DuckDB. dlt escribe los archivos de destino leyendo de a lotes, así que no carga un archivo entero en memoria |
-| DuckDB | Esquema, calidad y capa curada | Lee Parquet directo con SQL y no necesita un servidor. Con un tope de memoria procesa millones de filas en 8 GB |
+| dlt | Ingesta | dlt escribe los archivos de destino leyendo de a lotes, así que no carga un archivo entero en memoria, ademas va dejando registrado su historial de cargas en sus archivos aunque este pipline no los use, sirve para trazabilidad|
+| DuckDB | Esquema, calidad y capa curada | Lee Parquet directo con SQL y no necesita un servidor. Con un tope de memoria procesa millones de filas, ademas los datos de los viajes vienen en formato parquet columnar y esta db sirve especificamente para eso |
 | dbt (con dbt-duckdb) | Modelo estrella | Los modelos son archivos con un `SELECT`, dbt los ordena según sus dependencias y corre tests sobre ellos |
 | Dagster | Orquestación | Cada etapa es un asset. Guarda el historial de corridas y los logs de cada etapa, y los muestra en una interfaz web |
 | Docker y Compose | Ejecución | El pipeline corre igual en cualquier máquina, y con un solo comando levanta también Dagster y Dozzle |
-| Dozzle | Ver los logs | Muestra en el navegador los logs de todos los contenedores. Para un batch que dura segundos me alcanzó; Prometheus y Grafana eran mucho más de lo que hacía falta |
+| Dozzle | Ver los logs | Muestra en el navegador los logs de todos los contenedores. Para un batch que dura segundos alcanza; Prometheus y Grafana eran mucho más de lo que hacía falta |
 | YAML | Contrato de esquema y reglas de calidad | Se lee fácil, admite comentarios y en Git se ve qué cambió |
 | pytest | Tests | Es el estándar de Python y alcanza para todo lo que hay que probar |
-| make y `lanzar.py` | Un solo comando | `make all` llama a `lanzar.py`, que decide si usa Docker o Python. Lo escribí en Python y no en el Makefile para que también se pueda correr sin make |
+| make y `lanzar.py` | Un solo comando | `make all` llama a `lanzar.py`, que decide si usa Docker o Python. Está escrito en Python y no en el Makefile para que también se pueda correr sin make |
 
 ## Cómo instalar y ejecutar
 
@@ -123,24 +128,20 @@ Cada corrida procesa su par de meses y no toca los demás. Si se corren varios m
 
 ## Decisiones
 
-Acá explico por qué hice cada cosa como la hice, etapa por etapa.
+Acá se explica por qué cada cosa se hizo como se hizo, etapa por etapa.
 
 ### Ingesta
 
-- Bajo cada archivo a `data/.tmp` y se lo paso a dlt, que lo escribe en `data/raw/` con el destino `filesystem`: Parquet para los viajes y CSV para las zonas. Lee de a lotes de 100.000 filas, así que nunca carga un archivo entero en memoria.
-- Configuré dlt con tres cosas:
-  - No cambia los nombres de las columnas (`SCHEMA__NAMING=direct`) y no manda telemetría.
-  - Cada archivo tiene su propio pipeline de dlt. Con uno compartido, dlt va acumulando el esquema y el archivo de 2024 salía con una columna `cbd_congestion_fee` inventada, llena de nulos.
-  - Los timestamps de la TLC no tienen zona horaria y le pido a dlt que no les ponga una. Si no, DuckDB los corre varias horas.
-- Los archivos quedan en carpetas estilo Hive (`year=AAAA/month=MM/`), como pide la consigna.
-- No repite descargas. Antes de bajar un archivo busca en `ingestion_log` el hash de su última descarga exitosa y, si el archivo existe y el hash coincide, lo saltea. Una corrida cortada a la mitad se recupera sola, porque solo cuenta como descargado lo que tiene una fila `ok`.
+- Cada archivo se baja a `data/.tmp` y se le pasa a dlt, que lo escribe en `data/raw/` con el destino `filesystem`: Parquet para los viajes y CSV para las zonas. Lee de a lotes de 100.000 filas, así que nunca carga un archivo entero en memoria.
+- Los archivos quedan en carpetas estilo Hive (`year=AAAA/month=MM/`).
+- No repite descargas. Antes de bajar un archivo busca en `ingestion_log` de `pipeline.duckdb` el hash de su última descarga exitosa y, si el archivo existe y el hash coincide, lo saltea. Una corrida cortada a la mitad se recupera sola, porque solo cuenta como descargado lo que tiene una fila `ok`.
 - La descarga va a un `.part` que se renombra recién al terminar, y el hash se calcula mientras baja. Cuando dlt termina se cuentan las filas del archivo final y tienen que coincidir con las del origen; si no, falla.
 - Reintenta hasta 3 veces (esperas de 2, 4 y 8 s) los errores de conexión, los timeouts, los cortes a mitad de la descarga y los 5xx, que pueden ser pasajeros. Los 4xx no: esperar no hace aparecer un archivo que no existe. Ante el primer archivo que falla, la ingesta se corta.
 - `ingestion_log` es una tabla de DuckDB con el archivo, la URL, las filas, el tamaño, el hash SHA-256, la fecha, el estado (`ok` o `error`) y un mensaje. Solo se le agregan filas, incluso cuando no se descarga nada (mensaje "omitido"). Lo que no se duplica son los datos.
 
 ### Esquema
 
-- El contrato es un YAML versionado, `contracts/yellow_schema.yaml`, separado del código, como pide la consigna. Lo elegí porque se lee fácil, admite comentarios y en Git los cambios se ven columna por columna. JSON no admite comentarios y un CSV no puede poner las políticas junto a las columnas.
+- El contrato es un YAML versionado, `contracts/yellow_schema.yaml`, separado del código, como pide la consigna. Se eligió porque se lee fácil, admite comentarios y en Git los cambios se ven columna por columna. JSON no admite comentarios y un CSV no puede poner las políticas junto a las columnas.
 - Cada columna tiene `nombre` (en snake_case), `origen` (cómo se llama en el archivo), `tipo`, `requerida` y `descripcion`, y las opcionales también `default_si_falta`. Hay además un `version` y un bloque `politicas`. Las reglas de calidad no están ahí: el contrato dice cómo es la estructura y las reglas dicen qué valores se aceptan. Al cargarlo se revisa que esté bien armado, así que un error de tipeo falla al arrancar y con un mensaje claro.
 - Qué hace el pipeline en cada caso:
 
@@ -151,9 +152,9 @@ Acá explico por qué hice cada cosa como la hice, etapa por etapa.
   | Aparece una columna que no está en el contrato | Avisa y la ignora |
   | El tipo es distinto al del contrato | Convierte si no pierde información (por ejemplo, de entero a entero más grande); si no, falla |
 
-- Una columna nueva no invalida los datos que conozco, pero tampoco tiene que pasar en silencio: por eso la ignoro y dejo un aviso con su nombre. Si se prefiere que corte, se cambia la política a `error` en el contrato, sin tocar código.
+- Una columna nueva no invalida los datos que ya se conocen, pero tampoco tiene que pasar en silencio: por eso se la ignora y se deja un aviso con su nombre. Si se prefiere que corte, se cambia la política a `error` en el contrato, sin tocar código.
 - `cbd_congestion_fee` vale `NULL` en 2024. Ese año el cargo no existía y el archivo no trae la columna. Un `0` diría que el viaje no pagó el cargo, y es falso. Con `NULL` se distingue "no se cobró" (el `0` de 2025) de "no existía", y los promedios y conteos ignoran los nulos en vez de mezclar los dos casos. Está escrito en el contrato (`default_si_falta: null`).
-- Leo los crudos con `hive_partitioning = false`. Si no, DuckDB agrega `year` y `month` como columnas que no están en el Parquet y que después chocarían con las de la partición del curado.
+- Los crudos se leen con `hive_partitioning = false`. Si no, DuckDB agrega `year` y `month` como columnas que no están en el Parquet y que después chocarían con las de la partición del curado.
 - `viajes_unificados` es una vista (un `UNION ALL` de los dos meses) y no una tabla, para no copiar más de 7 millones de filas en esta etapa. Cada `SELECT` sale de las columnas del contrato, más `archivo_origen` para rastrear la cuarentena. Los datos unificados quedan guardados en `aceptadas` y `cuarentena`.
 - Si un archivo no cumple el contrato, la etapa falla antes de que calidad o el curado toquen algo.
 
@@ -187,12 +188,12 @@ Acá explico por qué hice cada cosa como la hice, etapa por etapa.
 - Una regla de rechazo manda la fila a `cuarentena`, porque el dato es imposible o no se puede usar. Una de advertencia la deja en `aceptadas` y anota el id de la regla en `flags`. R06 es advertencia porque descartar entre el 13 % y el 23 % de los viajes borraría una parte enorme de los datos, y R10 porque las zonas 264 y 265 son códigos válidos de la tabla.
 - R04 usa 100 millas porque la mediana es 1,8 y el percentil 99,9 ronda las 29. R09 usa 100 mph por lo mismo. R09 y R10 son reglas propias, que salieron de explorar los datos.
 - `cuarentena` tiene las columnas del contrato, `archivo_origen`, `reglas_rechazo` (todas las reglas de rechazo que violó la fila) y `reglas_advertencia`. No se borra nada: toda fila rechazada se puede ver con su motivo.
-- Nulos. En SQL, comparar con `NULL` da `NULL`, y entonces una regla no marca una fila cuando la columna que evalúa es nula. Por eso R06 cuenta un `passenger_count` nulo igual que un 0 y R07 trata una zona nula como inexistente. Para las demás revisé los datos reales (marzo y abril de 2024 y 2025): las fechas, `trip_distance`, `total_amount`, las zonas, `payment_type` y `fare_amount` no tienen ningún nulo, así que R01 a R05 y R09 no corren ese riesgo. Los nulos que hay están en `passenger_count`, `RatecodeID`, `store_and_fwd_flag`, `congestion_surcharge` y `Airport_fee`, siempre en las mismas filas, que son justo las de `payment_type = 0` (Flex Fare): 426.190 en marzo de 2024 y 916.663 en marzo de 2025.
-- Cada mes se procesa en una transacción: se borran sus filas anteriores (por `archivo_origen`), se insertan las nuevas, se reconcilia y se guarda el reporte (`reporte_resumen` y `reporte_reglas`). La reconciliación comprueba que `filas leídas = aceptadas + cuarentena`, y cuenta las leídas directo del archivo original para que el control sea independiente. Si no cierra se lanza `ErrorReconciliacion` y se hace `ROLLBACK`. Por eso reprocesar un mes no duplica nada ni toca los otros. Las tablas se crean antes de abrir la transacción: crearlas adentro dejó una tabla vacía sin ningún error (lo encontré probando con datos reales).
+- Nulos. En SQL, comparar con `NULL` da `NULL`, y entonces una regla no marca una fila cuando la columna que evalúa es nula. Por eso R06 cuenta un `passenger_count` nulo igual que un 0 y R07 trata una zona nula como inexistente. Para las demás se revisaron los datos reales (marzo y abril de 2024 y 2025): las fechas, `trip_distance`, `total_amount`, las zonas, `payment_type` y `fare_amount` no tienen ningún nulo, así que R01 a R05 y R09 no corren ese riesgo. Los nulos que hay están en `passenger_count`, `RatecodeID`, `store_and_fwd_flag`, `congestion_surcharge` y `Airport_fee`, siempre en las mismas filas, que son justo las de `payment_type = 0` (Flex Fare): 426.190 en marzo de 2024 y 916.663 en marzo de 2025.
+- Cada mes se procesa en una transacción: se borran sus filas anteriores (por `archivo_origen`), se insertan las nuevas, se reconcilia y se guarda el reporte (`reporte_resumen` y `reporte_reglas`). La reconciliación comprueba que `filas leídas = aceptadas + cuarentena`, y cuenta las leídas directo del archivo original para que el control sea independiente. Si no cierra se lanza `ErrorReconciliacion` y se hace `ROLLBACK`. Por eso reprocesar un mes no duplica nada ni toca los otros. Las tablas se crean antes de abrir la transacción: crearlas adentro dejó una tabla vacía sin ningún error (se encontró al probar con datos reales).
 - Lo que mostraron los datos:
-  - R02 pasa de unas 1.100 filas en 2024 a entre 22.000 y 35.000 en 2025 (marzo y abril). No investigué la causa.
-  - R07 y R08 no encontraron nada en los datos reales. Comprobé en los tests, con datos sintéticos, que funcionan.
-  - Hay viajes aceptados con `fare_amount` negativo, que R05 no ve porque solo mira `total_amount`. Son todos Flex Fare y su total es positivo: 14.187 en marzo de 2024 (0,4 % de las aceptadas) y 128.456 en marzo de 2025 (3,2 %). No los excluí, pero mueven la tarifa media de la pregunta f (ver las limitaciones).
+  - R02 pasa de unas 1.100 filas en 2024 a entre 22.000 y 35.000 en 2025 (marzo y abril). No se investigó la causa.
+  - R07 y R08 no encontraron nada en los datos reales. En los tests, con datos sintéticos, se comprobó que funcionan.
+  - Hay viajes aceptados con `fare_amount` negativo, que R05 no ve porque solo mira `total_amount`. Son todos Flex Fare y su total es positivo: 14.187 en marzo de 2024 (0,4 % de las aceptadas) y 128.456 en marzo de 2025 (3,2 %). No se excluyeron, pero mueven la tarifa media de la pregunta f (ver las limitaciones).
 
 ### Transformación
 
@@ -208,15 +209,15 @@ Acá explico por qué hice cada cosa como la hice, etapa por etapa.
   | `propina_pct` | 100 × propina / tarifa | Solo con `payment_type = 1` (tarjeta) y `fare_amount > 0`; en los demás casos es `NULL` |
 
 - `propina_pct` es solo con tarjeta porque, según el diccionario de la TLC, la propina se registra únicamente en pagos con tarjeta: en efectivo un `tip_amount` de 0 significa "no se registró" y no "no dejó propina". Flex Fare (`payment_type = 0`) tiene 91,9 % de propinas en 0 y tampoco es comparable. Con todos los medios de pago mezclados el promedio daba cerca de 18 %, y solo con tarjeta 26,1 %. `tip_amount` y `payment_type` se conservan, así que no se pierde información.
-- Para las zonas hago dos `LEFT JOIN` a la tabla de zonas, uno por el origen (`pu_borough`, `pu_zona`) y otro por el destino (`do_borough`, `do_zona`). Uso `LEFT JOIN` para que una zona sin datos no haga desaparecer el viaje. Si la tabla de zonas tuviera un id repetido, el `JOIN` duplicaría filas y el chequeo de conteo lo detecta (hay un test).
-- Escribo un archivo por mes a mano. Probé `COPY ... PARTITION_BY` de DuckDB con `OVERWRITE` y, en la versión 2.0.0, borraba las particiones de los otros meses, justo lo que la consigna prohíbe. Cada mes queda como su propio archivo en su carpeta `year=/month=`, y DuckDB las lee todas juntas con `hive_partitioning`.
+- Para las zonas se hacen dos `LEFT JOIN` a la tabla de zonas, uno por el origen (`pu_borough`, `pu_zona`) y otro por el destino (`do_borough`, `do_zona`). Se usa `LEFT JOIN` para que una zona sin datos no haga desaparecer el viaje. Si la tabla de zonas tuviera un id repetido, el `JOIN` duplicaría filas y el chequeo de conteo lo detecta (hay un test).
+- Cada mes se escribe como un archivo aparte, a mano. Se probó `COPY ... PARTITION_BY` de DuckDB con `OVERWRITE` y, en la versión 2.0.0, borraba las particiones de los otros meses, justo lo que la consigna prohíbe. Cada mes queda como su propio archivo en su carpeta `year=/month=`, y DuckDB las lee todas juntas con `hive_partitioning`.
 - La carpeta del curado es `month=3` y no `month=03`: con `month=03` DuckDB infiere el mes como texto y con `month=3` como número. Los crudos conservan `month=03`, como los nombra la TLC.
 - El reemplazo de una partición es atómico. El mes se escribe en `curado.parquet.part`, se cuentan sus filas y recién ahí se renombra a `curado.parquet` con `os.replace`. Si algo falla antes, se borra el `.part` y la partición anterior queda intacta.
 - Hay una segunda reconciliación: las filas aceptadas del mes en la base tienen que ser iguales a las del Parquet escrito, contadas desde el propio archivo. Si no coinciden se lanza `ErrorReconciliacion` y no se reemplaza nada. Si un mes no tiene filas aceptadas, falla con un mensaje claro en vez de escribir una partición vacía.
 
 #### Demostración: reprocesar un mes reemplaza solo su partición
 
-Corrí `python run.py --mes 2025-03`, después `--mes 2025-04` y después otra vez `--mes 2025-03`. Cada corrida procesa el mes pedido y el mismo mes de 2024. Al terminar miré, en cada archivo de `data/curado/`, la hora de escritura, el hash y la cantidad de filas.
+Se corrió `python run.py --mes 2025-03`, después `--mes 2025-04` y después otra vez `--mes 2025-03`. Cada corrida procesa el mes pedido y el mismo mes de 2024. Al terminar se miró, en cada archivo de `data/curado/`, la hora de escritura, el hash y la cantidad de filas.
 
 | Partición | Tras correr marzo y abril | Tras volver a correr marzo |
 |---|---|---|
@@ -296,7 +297,7 @@ Decisiones:
 - El recurso `sesion` abre al empezar la corrida la clase `Sesion` (la conexión a DuckDB y la medición) y la cierra al terminar, aunque haya fallas. Los seis assets usan esa misma sesión, así que comparten la conexión y suman al mismo resumen.
 - Cada asset escribe su línea `clave=valor` en el log de Dagster y devuelve lo medido (duración, filas, RAM) como metadatos de la materialización.
 - El historial queda en `data/dagster_home` (variable `DAGSTER_HOME`): corridas, eventos y los logs de cada paso en `storage/<id de la corrida>/compute_logs/`. El `.err` tiene los logs propios de Dagster y el `.out` lo que imprime el pipeline. Esa carpeta la comparten el contenedor que corre el pipeline y el que sirve la interfaz.
-- Uso el ejecutor en proceso: todos los pasos corren en el mismo proceso, que hace falta para compartir la conexión a DuckDB. Las etapas son secuenciales de todos modos.
+- Se usa el ejecutor en proceso: todos los pasos corren en el mismo proceso, que hace falta para compartir la conexión a DuckDB. Las etapas son secuenciales de todos modos.
 - No hay daemon ni schedules, porque el pipeline corre una vez por comando. La telemetría está desactivada.
 - Los meses no son particiones de Dagster: el par de meses lo define `meses_a_procesar` y el modelo se construye con todas las particiones curadas.
 - Dagster es opcional. Está en `requirements-dagster.txt` y no en `requirements.txt`. Si no está instalado o no puede abrir su carpeta, el pipeline corre sin él y avisa. Sin Docker, `make all` corre sin Dagster.
@@ -346,7 +347,7 @@ Medición de `make all MES=2025-03` en Docker (contenedor con 6.144 MB y 16 núc
 
 El pico de toda la corrida es de 2.882 MB, en la etapa `curado`, contra los 6.144 MB del contenedor y los 8 GB del equipo objetivo.
 
-También corrí `make all MES=2025-04 MODO=local` (sin Docker, con Python 3.14, 16 núcleos y descargando los dos archivos): tardó 51,4 s en total, de los cuales 31,6 s fueron de la ingesta por la descarga, y el pico fue de 3.498 MB, con seis meses en la capa curada. En otra computadora, corriendo con `lanzar.py`, el pico máximo fue de 3.600 MB.
+También se corrió `make all MES=2025-04 MODO=local` (sin Docker, con Python 3.14, 16 núcleos y descargando los dos archivos): tardó 51,4 s en total, de los cuales 31,6 s fueron de la ingesta por la descarga, y el pico fue de 3.498 MB, con seis meses en la capa curada. En otra computadora, corriendo con `lanzar.py`, el pico máximo fue de 3.600 MB.
 
 Para que el pico no suba, el pipeline cierra su conexión a DuckDB antes de la primera etapa que no usa la base (`modelo`). Después de calidad y curado esa conexión retiene unos 2,4 GB aunque ya no se use, y dbt corre en otro proceso, así que con la conexión abierta las dos memorias se suman. Medido en la misma máquina y con el mismo mes, el pico de la etapa `modelo` bajó de 4.534 MB a 2.132 MB. Además `memory_limit = 4GB` en DuckDB hace que, si una consulta necesita más, escriba a disco en vez de agotar la memoria.
 
@@ -355,26 +356,26 @@ Para que el pico no suba, el pipeline cierra su conexión a DuckDB antes de la p
 - El hash se compara contra lo que anotó el log. Si la TLC republica un archivo con el mismo nombre, la ingesta no lo detecta.
 - El servidor responde 403 (no 404) cuando un archivo no existe, así que un 403 puede significar que el mes todavía no está publicado.
 - La comparación de nombres de columna distingue mayúsculas. Si la TLC renombrara `Airport_fee` a `airport_fee`, el pipeline lo trataría como una columna requerida que falta y fallaría.
-- Probé con archivos de 2024 y 2025, que tienen el mismo esquema salvo `cbd_congestion_fee`. No probé con años anteriores.
+- Se probó con archivos de 2024 y 2025, que tienen el mismo esquema salvo `cbd_congestion_fee`. No se probó con años anteriores.
 - El umbral de R09 (100 mph) es amplio: pasan viajes de hasta 99,3 mph, que siguen siendo dudosos. Es una cota, no una garantía.
 - El salto de R02 entre 2024 y 2025 no está explicado.
-- Hay viajes aceptados con `fare_amount` negativo (R05 solo mira `total_amount`): 14.187 en marzo de 2024 y 128.456 en marzo de 2025. Todos son Flex Fare y su `total_amount` es positivo. No sé a qué corresponde esa tarifa negativa. No afectan a `propina_pct`, que solo se calcula con `fare_amount > 0`, pero sí a la tarifa media de la pregunta f. Con todos los viajes aceptados la tarifa media baja 3,47 % (de 19,06 a 18,40 dólares). Sin esos viajes pasa de 19,15 a 19,16 (+0,08 %). La distancia media casi no cambió (de 3,36 a 3,33 millas), así que la baja no sale de que los viajes sean más cortos. Las preguntas e y f usan `avg(fare_amount)`, por lo que esas medias incluyen las tarifas negativas.
+- Hay viajes aceptados con `fare_amount` negativo (R05 solo mira `total_amount`): 14.187 en marzo de 2024 y 128.456 en marzo de 2025. Todos son Flex Fare y su `total_amount` es positivo. No se determinó a qué corresponde esa tarifa negativa. No afectan a `propina_pct`, que solo se calcula con `fare_amount > 0`, pero sí a la tarifa media de la pregunta f. Con todos los viajes aceptados la tarifa media baja 3,47 % (de 19,06 a 18,40 dólares). Sin esos viajes pasa de 19,15 a 19,16 (+0,08 %). La distancia media casi no cambió (de 3,36 a 3,33 millas), así que la baja no sale de que los viajes sean más cortos. Las preguntas e y f usan `avg(fare_amount)`, por lo que esas medias incluyen las tarifas negativas.
 - Flex Fare (`payment_type = 0`) es el 11,0 % de los viajes aceptados de marzo de 2024 y el 21,6 % de marzo de 2025, y trae nulos en cinco columnas. Las reglas no lo tratan aparte.
 - La idempotencia de la capa curada es de contenido, no de bytes (el hash del archivo puede cambiar al reprocesar).
 - El modelo se reconstruye con todas las particiones curadas, así que tarda más a medida que se acumulan meses en `data/curado/`.
 - El pico de RAM es una muestra (cada 0,1 s) y puede perder un pico más corto que ese intervalo.
-- Probé Dozzle y la interfaz de Dagster en Linux. El historial de Dagster es una base SQLite compartida entre dos contenedores por un volumen montado, y en otros sistemas (Docker Desktop en Mac o Windows) los bloqueos de archivo podrían comportarse distinto. No lo probé.
+- Dozzle y la interfaz de Dagster se probaron en Linux. El historial de Dagster es una base SQLite compartida entre dos contenedores por un volumen montado, y en otros sistemas (Docker Desktop en Mac o Windows) los bloqueos de archivo podrían comportarse distinto. No se probó.
 - Los logs de Docker y de Dagster salen con la hora en UTC.
 - Sin Docker no hay Dozzle ni Dagster: el seguimiento queda en la terminal y en `data/logs/`.
 
 ## Uso de IA
 
-Usé Claude (de Anthropic) a lo largo de todo el trabajo, para tres cosas:
+Se usó Claude (de Anthropic) a lo largo de todo el trabajo, para tres cosas:
 
-- Para entender. Le pedí que me explicara de a poco las herramientas que no conocía (dlt, dbt, Dagster, Docker y cómo se conecta todo) antes de tocar código, y le seguí preguntando hasta poder explicar cada parte con mis palabras.
-- Para escribir una primera versión del código, los tests, la configuración de Docker, Dagster y las métricas, y borradores de este README y de `RESULTADOS.MD`.
+- Para entender. Se le pidió que explicara de a poco las herramientas que no se conocían (y cómo se conecta todo) antes de tocar código, y se siguió preguntando hasta poder explicar cada parte con palabras propias.
+- Para escribir código, los tests, la configuración de Docker, Dagster y las métricas, y borradores de este README y de `RESULTADOS.MD`.
 - Para revisar los datos. Corrió consultas sobre los Parquet reales para comprobar cosas, por ejemplo cuántos nulos hay y cuántos viajes tienen tarifa negativa.
 
-Lo que decidí yo: el alcance (dejé afuera Prometheus, Grafana y la nube para no agrandar el trabajo), los cambios que pidió el profesor (dlt, Dozzle, Docker, los logs de Dagster, que el contenedor no termine solo) y que `make all` no falle nunca por culpa de Docker.
+Las decisiones las tomó el grupo: el alcance (quedaron afuera Prometheus, Grafana y la nube para no agrandar el trabajo), los cambios (dlt, Dozzle, Docker, los logs de Dagster, que el contenedor no termine solo) y que `make all` no falle nunca por culpa de Docker.
 
-Lo verifiqué corriendo yo los comandos y los tests, probando `make all` en otra computadora, y mirando las bases en DBeaver para comparar con lo que informa el pipeline. Si algo del código no lo puedo explicar, no lo entrego.
+Todo se verificó corriendo los comandos y los tests, probando `make all` en otra computadora y mirando las bases en DBeaver para comparar con lo que informa el pipeline.
