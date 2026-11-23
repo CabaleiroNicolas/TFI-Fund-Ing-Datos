@@ -12,8 +12,8 @@ Trabajo final de Fundamentos de la Ingeniería de Datos. Es un pipeline batch qu
 | Herramienta | Para qué | Por qué esa |
 |---|---|---|
 | Python 3.10+ | Todo el pipeline | Es el lenguaje en el que están las otras herramientas, y para lo demás alcanza con la biblioteca estándar |
-| dlt | Ingesta | dlt escribe los archivos de destino leyendo de a lotes, así que no carga un archivo entero en memoria, ademas va dejando registrado su historial de cargas en sus archivos aunque este pipline no los use, sirve para trazabilidad|
-| DuckDB | Esquema, calidad y capa curada | Lee Parquet directo con SQL y no necesita un servidor. Con un tope de memoria procesa millones de filas, ademas los datos de los viajes vienen en formato parquet columnar y esta db sirve especificamente para eso |
+| dlt | Ingesta | Escribe los archivos de destino leyendo de a lotes, así que no carga un archivo entero en memoria. Además deja registrado su historial de cargas en sus propios archivos; el pipeline no los usa, pero sirven para trazabilidad |
+| DuckDB | Esquema, calidad y capa curada | Lee Parquet directo con SQL y no necesita un servidor. Con un tope de memoria procesa millones de filas, y como los datos de los viajes vienen en Parquet (formato columnar), es una herramienta pensada justo para eso |
 | dbt (con dbt-duckdb) | Modelo estrella | Los modelos son archivos con un `SELECT`, dbt los ordena según sus dependencias y corre tests sobre ellos |
 | Dagster | Orquestación | Cada etapa es un asset. Guarda el historial de corridas y los logs de cada etapa, y los muestra en una interfaz web |
 | Docker y Compose | Ejecución | El pipeline corre igual en cualquier máquina, y con un solo comando levanta también Dagster y Dozzle |
@@ -85,7 +85,7 @@ dbt_project.yml, profiles.yml         configuración de dbt
 requirements.txt                      dependencias del pipeline, con versiones fijas
 requirements-dagster.txt              Dagster, que se instala aparte
 tests/                                tests automatizados
-RESULTADOS.MD                         respuestas a las preguntas de marzo de 2025, con su interpretación
+RESULTADOS.md                         respuestas a las preguntas de marzo de 2025, con su interpretación
 
 data/                                 no está en el repositorio
   raw/yellow/year=AAAA/month=MM/      archivos originales, sin modificar (los escribe dlt)
@@ -133,6 +133,7 @@ Acá se explica por qué cada cosa se hizo como se hizo, etapa por etapa.
 ### Ingesta
 
 - Cada archivo se baja a `data/.tmp` y se le pasa a dlt, que lo escribe en `data/raw/` con el destino `filesystem`: Parquet para los viajes y CSV para las zonas. Lee de a lotes de 100.000 filas, así que nunca carga un archivo entero en memoria.
+- dlt se configuró con tres decisiones: no renombrar las columnas (`SCHEMA__NAMING=direct`) y sin telemetría; un pipeline por archivo, porque con uno compartido dlt acumula el esquema y el archivo de 2024 salía con una columna `cbd_congestion_fee` inventada, llena de nulos; y timestamps sin zona horaria, porque si no DuckDB los corre varias horas al leerlos.
 - Los archivos quedan en carpetas estilo Hive (`year=AAAA/month=MM/`).
 - No repite descargas. Antes de bajar un archivo busca en `ingestion_log` de `pipeline.duckdb` el hash de su última descarga exitosa y, si el archivo existe y el hash coincide, lo saltea. Una corrida cortada a la mitad se recupera sola, porque solo cuenta como descargado lo que tiene una fila `ok`.
 - La descarga va a un `.part` que se renombra recién al terminar, y el hash se calcula mientras baja. Cuando dlt termina se cuentan las filas del archivo final y tienen que coincidir con las del origen; si no, falla.
@@ -257,7 +258,7 @@ Se corrió `python run.py --mes 2025-03`, después `--mes 2025-04` y después ot
   | `$min_viajes_zona` | 1000 | c2: una zona con menos viajes en el mes no entra al ranking de proporciones, porque con pocos viajes la proporción no dice nada |
 
 - Una pregunta sin resultados es un error, no una respuesta vacía.
-- Las respuestas se imprimen al final de la etapa y cada corrida guarda su informe completo (consulta, parámetros y resultado) en `data/resultados/AAAA-MM.md`. Las de marzo de 2025, con su interpretación, están en `RESULTADOS.MD`.
+- Las respuestas se imprimen al final de la etapa y cada corrida guarda su informe completo (consulta, parámetros y resultado) en `data/resultados/AAAA-MM.md`. Las de marzo de 2025, con su interpretación, están en `RESULTADOS.md`.
 
 ## Docker y Dozzle
 
@@ -373,7 +374,7 @@ Para que el pico no suba, el pipeline cierra su conexión a DuckDB antes de la p
 Se usó Claude (de Anthropic) a lo largo de todo el trabajo, para tres cosas:
 
 - Para entender. Se le pidió que explicara de a poco las herramientas que no se conocían (y cómo se conecta todo) antes de tocar código, y se siguió preguntando hasta poder explicar cada parte con palabras propias.
-- Para escribir código, los tests, la configuración de Docker, Dagster y las métricas, y borradores de este README y de `RESULTADOS.MD`.
+- Para escribir código, los tests, la configuración de Docker, Dagster y las métricas, y borradores de este README y de `RESULTADOS.md`.
 - Para revisar los datos. Corrió consultas sobre los Parquet reales para comprobar cosas, por ejemplo cuántos nulos hay y cuántos viajes tienen tarifa negativa.
 
 Las decisiones las tomó el grupo: el alcance (quedaron afuera Prometheus, Grafana y la nube para no agrandar el trabajo), los cambios (dlt, Dozzle, Docker, los logs de Dagster, que el contenedor no termine solo) y que `make all` no falle nunca por culpa de Docker.

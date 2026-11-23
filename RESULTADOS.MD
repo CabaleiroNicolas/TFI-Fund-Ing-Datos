@@ -288,7 +288,6 @@ where ant.anio = $anio - 1 and act.anio = $anio
 
 **Interpretación e hipótesis:** Los viajes subieron 14,53 % y la tarifa media bajó 3,47 % ($19,06 a $18,40), con los mismos 10 días de fin de semana en ambos meses.
 
-- El calendario no lo explica: la cantidad de fines de semana es igual.
-- El crecimiento se concentra en el centro de Manhattan (hasta +19 % en las zonas del top 10), de viajes cortos y baratos, mientras los viajes de aeropuerto, los de tarifa más alta, no crecieron (−0,6 %).
-- Más viajes baratos con los caros sin cambio bajan el promedio: parece un efecto de composición y no de precios, porque la tarifa media de los viajes de JFK y LaGuardia casi no cambió (−1,0 % y 0,0 %).
-- Hipótesis sin verificar: el cargo de congestión, vigente desde enero de 2025, pudo favorecer los viajes cortos en taxi dentro de la zona de cobro.
+- No parece un cambio de composición: la distancia media casi no cambió (de 3,36 a 3,33 millas).
+- La baja viene de los viajes Flex Fare (`payment_type = 0`) con `fare_amount` negativo: 14.187 en marzo de 2024 (0,4 % de los aceptados) y 128.456 en marzo de 2025 (3,2 %), con tarifa media de −$1,44 y −$4,27. Se aceptaron porque R05 solo mira `total_amount`, que es positivo.
+- Sin esos viajes la tarifa media pasa de $19,15 a $19,16 (+0,08 %). No se excluyeron del cálculo y no se determinó a qué corresponde la tarifa negativa.
