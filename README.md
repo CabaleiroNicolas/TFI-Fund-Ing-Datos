@@ -30,11 +30,14 @@ Otros comandos:
 | Comando | Qué hace |
 |---|---|
 | `make all MES=AAAA-MM` | Pipeline completo: en Docker si se puede y, si no, con Python |
+| `make all MES=AAAA-MM MODO=local` | Lo mismo, pero forzando Python: no usa Docker aunque esté instalado |
 | `make local MES=AAAA-MM` | Solo con Python, sin Docker (equivale a `python run.py --mes AAAA-MM`) |
 | `make docker MES=AAAA-MM` | Solo en Docker; falla si Docker no está disponible |
 | `make test` | Tests automatizados con el Python local |
 | `make test-docker` | Todos los tests dentro de la imagen de Docker |
 | `make down` | Apaga los contenedores (pipeline, Dagster y Dozzle); `data/` no se toca |
+
+Sin `make`, el mismo pipeline se lanza con `python3 lanzar.py --mes AAAA-MM` (con `--local`, o `-l`, para no usar Docker).
 
 Dagster sin Docker es opcional: `pip install -r requirements-dagster.txt` y después `python run.py --mes 2025-03 --dagster`. Su interfaz se levanta con `python -m src.orquestacion web`.
 
@@ -46,7 +49,7 @@ Tests:
 python -m pytest tests -q
 ```
 
-Los tests de Dagster se saltean si Dagster no está instalado (en ese caso 149 pasan y 1 módulo se saltea); dentro de la imagen de Docker corren todos (`make test-docker`: 164).
+Los tests de Dagster se saltean si Dagster no está instalado. Dentro de la imagen de Docker (`make test-docker`) corren los de Dagster y se saltean solo los que necesitan `make`, que la imagen no trae.
 
 ## Arquitectura
 

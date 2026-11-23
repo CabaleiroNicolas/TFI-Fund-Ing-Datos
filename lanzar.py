@@ -116,7 +116,13 @@ def main(argv=None) -> int:
     parser.add_argument("--mes", required=True, help="mes asignado, formato AAAA-MM")
     parser.add_argument("--modo", choices=["auto", "docker", "local"], default="auto",
                         help="auto: Docker si está disponible y, si no, local (por defecto)")
+    parser.add_argument("-l", "--local", action="store_true",
+                        help="atajo de --modo local: corre directo con Python, sin Docker")
     args = parser.parse_args(argv)
+    if args.local and args.modo == "docker":
+        parser.error("--local y --modo docker se contradicen")
+    if args.local:
+        args.modo = "local"
     if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", args.mes):
         parser.error(f"mes inválido: '{args.mes}'. Formato esperado: AAAA-MM (por ejemplo 2025-03)")
 

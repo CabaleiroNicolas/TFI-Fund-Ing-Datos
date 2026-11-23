@@ -2,6 +2,7 @@
 # Docker se reemplaza por un doble que registra los comandos y contesta lo que cada test le indica.
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -155,6 +156,30 @@ def test_en_modo_local_no_se_toca_docker(entorno):
     falso = entorno()
     assert lanzar.main(["--mes", "2025-03", "--modo", "local"]) == 0
     assert falso.corrio_en_local() and not falso.corrio("docker")
+
+
+@pytest.mark.parametrize("bandera", ["--local", "-l"])
+def test_la_bandera_local_equivale_a_modo_local(entorno, bandera):
+    falso = entorno()                                        # con Docker disponible: igual no se usa
+    assert lanzar.main(["--mes", "2025-03", bandera]) == 0
+    assert falso.corrio_en_local() and not falso.corrio("docker")
+
+
+def test_la_bandera_local_junto_a_modo_docker_se_rechaza_antes_de_tocar_nada(entorno):
+    falso = entorno()
+    with pytest.raises(SystemExit) as salida:
+        lanzar.main(["--mes", "2025-03", "--local", "--modo", "docker"])
+    assert salida.value.code == 2 and falso.comandos == []
+
+
+@pytest.mark.skipif(shutil.which("make") is None, reason="make no está instalado")
+@pytest.mark.parametrize("argumentos, modo", [([], "auto"), (["MODO=local"], "local"), (["MODO=docker"], "docker")])
+def test_make_all_pasa_el_modo_a_lanzar(argumentos, modo):
+    # 'make -n' solo muestra los comandos que correría, sin ejecutarlos.
+    resultado = subprocess.run(["make", "-n", "all", "MES=2025-03", *argumentos], cwd=RAIZ_REAL,
+                               capture_output=True, text=True)
+    assert resultado.returncode == 0
+    assert f"lanzar.py --mes 2025-03 --modo {modo}" in resultado.stdout
 
 
 def test_el_codigo_de_salida_de_la_corrida_local_se_devuelve(entorno):
