@@ -2,9 +2,11 @@
 
 Pipeline batch que ingiere, valida, limpia y modela los viajes de taxi amarillo de Nueva York (TLC) para un mes asignado y el mismo mes del año anterior, y responde preguntas de negocio sobre el modelo resultante.
 
+Herramientas: dlt (ingesta), DuckDB (esquema, calidad y transformación), dbt (modelo estrella), Dagster (orquestación) y Docker con Dozzle (ejecución y logs).
+
 ## Cómo instalar y ejecutar
 
-Requisitos: Python 3.10 o superior, make y git.
+Requisitos: Python 3.10 o superior, make y git. Docker es opcional: si está disponible se usa y, si no, el pipeline corre directo con Python.
 
 ```bash
 python3 -m venv .venv
@@ -18,7 +20,23 @@ Ejecución completa para un mes (se procesa también el mismo mes del año anter
 make all MES=2025-03
 ```
 
-> PENDIENTE: el Makefile todavía no existe. Por ahora la ejecución completa es `python run.py --mes 2025-03`; el Makefile va a llamar a ese mismo comando.
+`make all` elige solo cómo correr:
+
+- **Con Docker** (si está instalado y responde): construye la imagen, levanta Dozzle y la interfaz de Dagster, y corre el pipeline en un contenedor, orquestado por Dagster. Los logs se ven en la terminal, en Dozzle (http://localhost:8080) y en Dagster (http://localhost:3000). Los contenedores quedan encendidos al terminar, para poder seguir consultando los logs; `make down` los apaga. La primera vez tarda unos minutos más porque construye la imagen.
+- **Sin Docker**: corre directo con Python (`run.py`), sin Dozzle ni Dagster, y avisa por qué.
+
+Otros comandos:
+
+| Comando | Qué hace |
+|---|---|
+| `make all MES=AAAA-MM` | Pipeline completo: en Docker si se puede y, si no, con Python |
+| `make local MES=AAAA-MM` | Solo con Python, sin Docker (equivale a `python run.py --mes AAAA-MM`) |
+| `make docker MES=AAAA-MM` | Solo en Docker; falla si Docker no está disponible |
+| `make test` | Tests automatizados con el Python local |
+| `make test-docker` | Todos los tests dentro de la imagen de Docker |
+| `make down` | Apaga los contenedores (pipeline, Dagster y Dozzle); `data/` no se toca |
+
+Dagster sin Docker es opcional: `pip install -r requirements-dagster.txt` y después `python run.py --mes 2025-03 --dagster`. Su interfaz se levanta con `python -m src.orquestacion web`.
 
 Los datos no se incluyen en el repositorio (`data/` está en `.gitignore`). Se descargan en la primera corrida.
 
@@ -28,35 +46,58 @@ Tests:
 python -m pytest tests -q
 ```
 
+Los tests de Dagster se saltean si Dagster no está instalado (en ese caso 149 pasan y 1 módulo se saltea); dentro de la imagen de Docker corren todos (`make test-docker`: 164).
+
 ## Arquitectura
 
 ```
-run.py                                punto de entrada: python run.py --mes AAAA-MM
-src/                                  una etapa por módulo, más pipeline.py que las ordena
-data/raw/yellow/year=AAAA/month=MM/   archivos originales, sin modificar
-data/raw/zones/                       tabla de zonas
-data/curado/year=AAAA/month=M/        capa curada (Parquet), un archivo por mes
-data/pipeline.duckdb                  ingestion_log, vistas y tablas de calidad (y, más adelante, del modelo)
+run.py                                punto de entrada: python run.py --mes AAAA-MM [--dagster]
+lanzar.py                             entrada de `make all`: elige Docker o Python y sigue el log
+Makefile                              atajos (all, local, docker, test, test-docker, down)
+Dockerfile, docker-compose.yml        imagen y servicios (pipeline, Dagster, Dozzle)
+docker-entrypoint.sh                  corre el pipeline y deja el contenedor encendido
+src/                                  una etapa por módulo (e1 a e6) y pipeline.py que las ordena;
+                                      metricas.py (medición y logs) y orquestacion.py (Dagster)
 contracts/yellow_schema.yaml          contrato de esquema
 contracts/reglas_calidad.yaml         reglas de calidad (son datos, no código)
 sql/transformacion/curado.sql         consulta que arma la capa curada
+sql/modelo/                           modelos de dbt (modelo estrella) y su schema.yml
+sql/tests/                            tests de dbt escritos en SQL
+sql/preguntas/                        una consulta por pregunta de negocio
+dbt_project.yml, profiles.yml         configuración de dbt
+requirements.txt                      dependencias del pipeline, con versiones fijas
+requirements-dagster.txt              Dagster, que se instala aparte
 tests/                                tests automatizados
+RESULTADOS.MD                         respuestas a las preguntas de marzo de 2025, con su interpretación
+
+data/                                 no está en el repositorio
+  raw/yellow/year=AAAA/month=MM/      archivos originales, sin modificar (los escribe dlt)
+  raw/zones/                          tabla de zonas
+  curado/year=AAAA/month=M/           capa curada (Parquet), un archivo por mes
+  pipeline.duckdb                     ingestion_log, vistas y tablas de calidad
+  modelo.duckdb                       modelo estrella (lo construye dbt)
+  resultados/AAAA-MM.md               informe de las preguntas de cada corrida
+  logs/AAAA-MM.jsonl                  log estructurado de la corrida
+  dagster_home/                       historial de corridas y logs de Dagster
+  dbt_logs/, dbt_target/              logs y resultados de dbt
+  .tmp/, .dlt/                        archivos temporales de la ingesta
 ```
 
 Los datos pasan de una capa a la siguiente así:
 
 ```
-parquet crudos -> vista viajes_unificados -> aceptadas / cuarentena -> Parquet curado -> modelo
-   (ingesta)          (esquema)                   (calidad)             (transformación)
+parquet crudos -> vista viajes_unificados -> aceptadas / cuarentena -> Parquet curado -> modelo estrella -> preguntas
+   (ingesta)          (esquema)                   (calidad)             (transformación)     (modelo)        (preguntas)
 ```
 
 | Etapa | Módulo | Qué hace |
 |---|---|---|
-| 1. Ingesta | `src/e1_ingesta.py` | Descarga los archivos sin modificarlos, calcula el hash y registra todo en `ingestion_log` |
+| 1. Ingesta | `src/e1_ingesta.py` | Descarga los archivos, los carga con dlt sin modificarlos, calcula el hash y registra todo en `ingestion_log` |
 | 2. Esquema | `src/e2_esquema.py` | Compara cada archivo con el contrato, normaliza nombres y tipos y unifica los dos meses en la vista `viajes_unificados` |
 | 3. Calidad | `src/e3_calidad.py` | Evalúa las reglas sobre `viajes_unificados`, manda las filas rechazadas a `cuarentena` y las demás a `aceptadas`, reporta y reconcilia los conteos |
 | 4. Transformación | `src/e4_transformacion.py` | Escribe la capa curada (columnas derivadas y zonas) como Parquet particionado por año y mes |
-| 5. Modelo | `src/e5_modelo.py` | PENDIENTE |
+| 5. Modelo | `src/e5_modelo.py` | Construye con dbt el modelo estrella sobre la capa curada y corre sus tests |
+| 6. Preguntas | `src/e6_preguntas.py` | Responde las preguntas de negocio sobre el modelo y guarda el informe del mes |
 
 `src/pipeline.py` define el orden de las etapas y `run.py` las ejecuta para el mes pedido.
 
@@ -64,9 +105,14 @@ parquet crudos -> vista viajes_unificados -> aceptadas / cuarentena -> Parquet c
 
 ### Ingesta
 
+- **dlt como herramienta de ingesta.** Cada archivo se descarga a `data/.tmp` y se le entrega a dlt, que lo escribe en `data/raw/` con su destino `filesystem`: Parquet para los viajes y CSV para las zonas. Los viajes se leen de a lotes de 100.000 filas, sin cargar el archivo entero en memoria. DuckDB se usa para el resto del pipeline, no para ingestar.
+- **Cómo se configuró dlt.**
+  - Los nombres de columnas no se cambian (`SCHEMA__NAMING=direct`) y la telemetría está apagada.
+  - Cada archivo tiene su propio pipeline de dlt y se borra su estado al terminar. dlt va acumulando el esquema de todo lo que carga en una tabla, y con un pipeline compartido el archivo de 2024 habría salido con una columna `cbd_congestion_fee` inventada, llena de nulos.
+  - Los timestamps de la TLC no tienen zona horaria, y se le indica a dlt que no la agregue. Si no, DuckDB los corre varias horas al leerlos.
 - **Carpetas estilo Hive.** Los archivos se guardan en `data/raw/yellow/year=AAAA/month=MM/`, como pide la consigna.
 - **Idempotencia.** Antes de descargar se busca en `ingestion_log` el hash de la última descarga exitosa de ese archivo. Si el archivo existe y su hash actual coincide, no se descarga. Si falta o fue modificado, se vuelve a bajar. Solo cuenta como descargado lo que tiene una fila `ok` en el log, así que una corrida cortada a la mitad se recupera sola en la siguiente.
-- **Escritura atómica.** La descarga va a un archivo `.part`, el hash se calcula mientras se descarga, y recién al terminar se renombra al nombre final. Un corte de red no deja un archivo incompleto con el nombre definitivo. Se procesa de a bloques de 1 MB, sin cargar el archivo entero en memoria.
+- **Escritura atómica y verificación.** La descarga va a un archivo `.part` en `data/.tmp` y recién al terminar se renombra. El hash se calcula mientras se descarga, de a bloques de 1 MB. Después de que dlt escribe el archivo final se cuentan sus filas y tienen que coincidir con las del archivo de origen; si no, la ingesta falla y deja el error en el log.
 - **Reintentos.** Hasta 3 reintentos después del primer intento (4 intentos en total), con esperas de 2, 4 y 8 segundos. Se reintentan errores de conexión, timeouts, cortes a mitad de la descarga y errores 5xx, porque pueden ser pasajeros. No se reintentan los errores 4xx: esperar no hace aparecer un archivo que no existe.
 - **`ingestion_log`.** Tabla en DuckDB con archivo, URL, filas, tamaño en bytes, hash SHA-256, fecha y hora, estado (`ok` o `error`) y un mensaje. Es de solo agregado: cada corrida deja filas, incluso cuando no descarga nada (estado `ok`, mensaje "omitido"). Lo que no se duplica son los datos.
 - **Falla rápido.** Ante el primer error la ingesta se corta. Códigos de salida: 0 si todo salió bien, 1 si falló una descarga y 2 si el parámetro `--mes` tiene mal el formato.
@@ -172,16 +218,116 @@ Se corrió `python run.py --mes 2025-03`, después `python run.py --mes 2025-04`
 
 ### Orquestación y reproducibilidad
 
-- **Un comando.** `run.py --mes AAAA-MM` ejecuta las etapas en orden (ingesta, esquema, calidad, curado). `src/pipeline.py` tiene una función por etapa, todas con la misma firma `(con, anio, mes)`, y una lista `ETAPAS` que las recorre. Agregar una etapa es agregar una línea.
-- **Una sola conexión.** Todas las etapas comparten la conexión a DuckDB, que se abre al empezar y se cierra siempre al terminar. Se fija `memory_limit = 4GB` (la mitad de los 8 GB del equipo objetivo): si una consulta necesita más, DuckDB escribe a disco en vez de agotar la memoria.
+- **Un comando.** `run.py --mes AAAA-MM` ejecuta las seis etapas en orden. `src/pipeline.py` tiene una función por etapa, todas con la misma firma `(con, anio, mes)`, que devuelven un diccionario con lo que procesaron, y una lista `ETAPAS` que las recorre (nombre, función y si usa la base del pipeline). Agregar una etapa es agregar una línea.
+- **Una sesión por corrida.** La clase `Sesion` abre la conexión a DuckDB y la medición al empezar, corre cada etapa midiéndola y lo cierra todo al terminar, aunque falle. Es la misma que usan las dos formas de correr el pipeline: el `for` de `ejecutar()` y Dagster. Se fija `memory_limit = 4GB` en DuckDB: si una consulta necesita más, escribe a disco en vez de agotar la memoria.
+- **La conexión se cierra antes de dbt.** Después de calidad y curado, la conexión del pipeline retiene unos 2,4 GB de memoria aunque ya no se use. dbt corre en otro proceso y, con la conexión abierta, las dos memorias se suman. Por eso se cierra antes de la primera etapa que no usa la base (`modelo`). Medido en la misma máquina y con el mismo mes: el pico de la etapa `modelo` bajó de 4.534 MB a 2.132 MB.
 - **Qué meses se procesan.** `meses_a_procesar` es el único lugar que define el par (el mes pedido y el mismo mes del año anterior).
-- **Falla rápido y dice dónde.** Si una etapa falla, el pipeline se corta ahí y el error indica cuál fue (`falló la etapa 'esquema': ...`). Códigos de salida: 0 todo bien, 1 falló una etapa, 2 `--mes` con mal formato.
-- **La base no es la fuente de verdad.** Todo lo que hay en `data/pipeline.duckdb` se reconstruye a partir de los Parquet crudos y del código. Se puede borrar `data/` entera y el pipeline la recrea. Si se borra solo la base, la ingesta vuelve a descargar los archivos (el log vacío no tiene hashes con qué compararlos) y quedan solo los meses que se vuelvan a correr. Lo único que no se recupera es el historial de descargas de `ingestion_log`.
+- **Falla rápido y dice dónde.** Si una etapa falla, el pipeline se corta ahí y el error indica cuál fue (`falló la etapa 'esquema': ...`). Códigos de salida: 0 todo bien, 1 falló una etapa, 2 `--mes` con mal formato. La corrida deja sus métricas en el log aunque falle.
+- **La base no es la fuente de verdad.** Todo lo que hay en `data/pipeline.duckdb` y en `data/modelo.duckdb` se reconstruye a partir de los Parquet crudos y del código. Se puede borrar `data/` entera y el pipeline la recrea. Si se borra solo la base, la ingesta vuelve a descargar los archivos (el log vacío no tiene hashes con qué compararlos) y quedan solo los meses que se vuelvan a correr. Lo único que no se recupera es el historial de descargas de `ingestion_log`.
 - **Acumulación de meses.** Cada corrida deja su par de meses y no toca los demás: correr varios meses deja una partición curada y una tanda de filas en `aceptadas` y `cuarentena` por cada uno.
 
 ### Modelo
 
-> PENDIENTE: granularidad de cada tabla y decisiones del modelo estrella (Parte 5).
+- **dbt.** Los modelos son los `SELECT` de `sql/modelo/`. `dbt build` los crea en orden de dependencias, como tablas en `data/modelo.duckdb`, y después corre los tests. Se ejecuta en un proceso aparte, así libera sus archivos y su memoria al terminar. Lee la capa curada (Parquet) y la tabla de zonas directamente, con `external_location` en `sql/modelo/fuentes.yml`, sin copiarlas a otra base.
+- **Modelo estrella.** Una tabla de hechos con dos dimensiones y una tabla agregada:
+
+  | Tabla | Una fila por... | Clave | Qué tiene |
+  |---|---|---|---|
+  | `fact_trips` | viaje aceptado de la capa curada | sin clave propia | `fecha` (→ `dim_date`), `pu_zona_id` y `do_zona_id` (→ `dim_zone`), hora, las medidas (distancia, duración, velocidad, tarifa, propina, cargos, total) y los códigos (`payment_type`, `ratecode_id`, `vendor_id`). Conserva `flags` y `archivo_origen` para la trazabilidad |
+  | `dim_date` | día calendario de cada mes presente en la capa curada | `fecha` | año, mes, día, día de la semana (ISO) y si es fin de semana |
+  | `dim_zone` | zona de la TLC | `zona_id` | borough, nombre de la zona y `service_zone` |
+  | `agg_zone_hour` | zona de origen, fecha y hora de subida | (`pu_zona_id`, `fecha`, `hora`) | viajes, ingreso total y duración media. Se construye a partir de `fact_trips`; la usa la pregunta a |
+
+- **Decisiones.**
+  - Una sola dimensión de zonas para los dos extremos del viaje: `fact_trips` tiene dos claves hacia `dim_zone`, una para el origen y otra para el destino.
+  - `fact_trips` no repite lo que ya sale de las dimensiones (nombres de zona y día de la semana). Los códigos de pago, tarifa y proveedor quedan como códigos en la tabla de hechos; la pregunta d traduce `payment_type` a texto con un `CASE`.
+  - `dim_date` se arma con los meses que hay en la capa curada, no con un calendario fijo.
+  - El modelo se construye con **todas** las particiones curadas que haya en `data/curado/`, no solo con el par del mes pedido. Las preguntas filtran por `$anio` y `$mes`.
+- **Tests de dbt (15).** `not_null` y `unique` en las claves; `relationships` de `fact_trips` hacia `dim_date` y `dim_zone` (una por cada clave); `not_null` en la granularidad de `agg_zone_hour`; y dos tests escritos en SQL en `sql/tests/`: `fact_trips_cuadra_con_curado` (la tabla de hechos tiene exactamente las filas de la capa curada) y `agg_zone_hour_cuadra_con_fact` (la agregada suma los mismos viajes y el mismo ingreso que la de hechos, con tolerancia de 1 dólar). Si algún modelo o test falla, la etapa falla y el pipeline se corta.
+
+### Preguntas de negocio
+
+- **Una consulta por pregunta.** Están en `sql/preguntas/`: `a`, `b`, `c1`, `c2`, `d`, `e` y `f`. Se ejecutan sobre `data/modelo.duckdb`, que se abre solo para lectura.
+- **Parámetros.** Cada consulta recibe solo los que usa:
+
+  | Parámetro | Valor | Dónde se usa |
+  |---|---|---|
+  | `$anio`, `$mes` | los de `--mes` | todas; comparan contra el mismo mes de `$anio - 1` |
+  | `$min_viajes_zona` | 1000 | c2: una zona con menos viajes en el mes no entra al ranking de proporciones, porque con pocos viajes la proporción no dice nada |
+
+- **Una pregunta sin resultados es un error**, no una respuesta vacía.
+- **Salida.** Se imprimen al final de la etapa y cada corrida guarda su informe completo (consulta, parámetros y resultado) en `data/resultados/AAAA-MM.md`. Las respuestas de marzo de 2025, con su interpretación, están en `RESULTADOS.MD`.
+
+### Docker, Dozzle y Dagster
+
+`docker-compose.yml` define tres servicios:
+
+| Servicio | Contenedor | Qué hace |
+|---|---|---|
+| `pipeline` | `nyc-taxi-pipeline` | Corre `run.py --mes AAAA-MM --dagster` y después queda encendido |
+| `dagster` | `nyc-taxi-dagster` | Interfaz web de Dagster (puerto 3000); lee el historial que escribe el pipeline |
+| `dozzle` | | Pantalla web con los logs de todos los contenedores (puerto 8080) |
+
+`pipeline` y `dagster` usan la misma imagen: `python:3.12-slim` con las dependencias de `requirements.txt` y de `requirements-dagster.txt`. Los dos montan la carpeta `./data` de la máquina.
+
+`make all` ejecuta `lanzar.py`, que hace lo siguiente:
+
+1. Valida el mes y consulta si Docker sirve (comando `docker`, servicio respondiendo y plugin `docker compose`).
+2. Construye la imagen.
+3. Levanta Dozzle.
+4. Levanta la interfaz de Dagster y espera hasta 120 s a que esté sana, para que su carpeta de historial ya exista cuando el pipeline empiece a escribir en ella.
+5. Levanta el contenedor del pipeline (antes borra el de la corrida anterior, si quedó).
+6. Muestra su log hasta que aparece la línea `== PIPELINE TERMINÓ: código N ==` y termina con ese código.
+
+Decisiones:
+
+- **El contenedor no termina cuando termina el pipeline.** `docker-entrypoint.sh` corre `run.py`, imprime esa línea con el código de salida y se queda en `sleep infinity`, para poder seguir viendo los logs en Dozzle. `lanzar.py` lee la línea para saber cuándo y cómo terminó.
+- **Docker nunca hace fallar el pipeline.** Si Docker no está instalado o no responde, falta `docker compose`, no se puede construir la imagen o el contenedor no arranca, se avisa y se corre directo con Python. Si lo que falla es Dozzle o la interfaz de Dagster, el pipeline corre igual en Docker y se avisa. Con `make docker` no hay respaldo: si Docker no sirve, falla.
+- **Un fallo del pipeline sí se informa.** Si el pipeline falla dentro del contenedor, `make all` termina con el mismo código y no lo reintenta en local: no es un problema de infraestructura, y volver a correrlo escondería el error y repetiría el trabajo. Si el contenedor muere sin avisar, se usa su código de salida y, si lo cortó Docker por memoria, se dice.
+- **Memoria.** El contenedor del pipeline tiene un tope de 6 GB y sin swap (`mem_limit` y `memswap_limit`), así que el límite es real. Adentro, DuckDB trabaja con `memory_limit = 4GB`.
+- **Archivos.** `./data` se monta dentro del contenedor: los resultados quedan en la máquina y se comparten entre corridas locales y corridas en Docker. En Linux, el contenedor corre con el usuario que lanzó `make`, para que `data/` no quede a nombre de root.
+- **Puertos.** 3000 y 8080 solo se abren en `127.0.0.1`: no son accesibles desde la red. Dozzle corre sin analíticas.
+- **`.dockerignore`.** Deja afuera `data/`, `.venv/` y `.git/`. Sin eso el contexto de construcción pesaba 1,3 GB.
+
+### Logs y métricas
+
+Cada etapa deja una línea de log con lo que tardó, lo que usó y lo que procesó. Los mismos eventos se ven en tres lugares:
+
+- **La terminal y Dozzle**, como líneas `clave=valor` (fáciles de filtrar: `etapa=calidad`, `evento=error`).
+- **`data/logs/AAAA-MM.jsonl`**, un JSON por línea, con todos los eventos (también el inicio de cada etapa). Se sobrescribe en cada corrida del mismo mes.
+- **Dagster**, que además guarda el historial de corridas (ver más abajo).
+
+Una línea de ejemplo (calidad, de una corrida real en Docker):
+
+```
+ts=2026-11-22T04:59:47+00:00 level=INFO etapa=calidad evento=fin duracion_s=7.69 cpu_s=49.22 cpu_pct=640 ram_fin_mb=2479 pico_etapa_mb=2593 filas=7727885 aceptadas=7408857 cuarentena=319028 con_advertencia=1464774
+```
+
+| Campo | Qué significa |
+|---|---|
+| `duracion_s` | Segundos de reloj que tardó la etapa |
+| `cpu_s` | Segundos de CPU sumando todos los núcleos, incluidos los procesos hijos que ya terminaron (dbt) |
+| `cpu_pct` | `cpu_s` sobre `duracion_s`: 100 es un núcleo ocupado todo el tiempo, 640 son unos seis |
+| `ram_fin_mb` | Memoria del proceso del pipeline al terminar la etapa |
+| `pico_etapa_mb` | Pico de memoria durante la etapa: suma de la memoria del proceso y de sus hijos (dbt), muestreada cada 0,1 s |
+| `filas` | Lo que procesó o produjo la etapa (no significa lo mismo en todas, ver abajo) |
+
+Qué cuenta `filas` en cada etapa: **ingesta**, las filas de los archivos del par de meses más las de la tabla de zonas; **esquema**, no informa filas; **calidad**, las filas leídas de los dos archivos; **curado**, las filas escritas en la capa curada (las aceptadas); **modelo**, la suma de las filas de las cuatro tablas del modelo (incluye todos los meses curados); **preguntas**, las filas de las tablas de respuesta. Cada etapa agrega además sus propios datos (por ejemplo, `aceptadas` y `cuarentena` en calidad, o `tests_dbt` en modelo).
+
+Eventos: `corrida_inicio` (mes, entorno, versión de Python, núcleos y memoria disponible), `inicio` de cada etapa (solo en el archivo), `fin` o `error` de cada etapa, y `corrida_fin` (estado, duración total, CPU y pico de RAM). Al terminar se imprime además una tabla resumen con una fila por etapa.
+
+**Pico de memoria.** Se mide en un hilo aparte que cada 0,1 s suma la memoria del proceso y de sus hijos. El pico de la corrida es el mayor entre los de las etapas y el que informa el sistema operativo para el proceso. `ram_disponible_mb` es el tope del contenedor si lo hay (cgroup v2) o la memoria de la máquina.
+
+### Dagster
+
+- **Una etapa, un asset.** Cada etapa es un asset de Dagster (grupo `nyc_taxi`). Las dependencias entre ellos solo fijan el orden (ingesta, esquema, calidad, curado, modelo, preguntas): los datos siguen pasando por DuckDB y los Parquet, no por Dagster. El job `pipeline_nyc_taxi` materializa los seis.
+- **El recurso `sesion`** abre la `Sesion` al empezar la corrida y la cierra al terminar, y los seis assets usan esa misma sesión: comparten la conexión y suman al mismo resumen. Las etapas son las mismas funciones que corre `ejecutar()`; Dagster reemplaza solo el `for` que las recorre.
+- **Qué registra.** Cada asset escribe su línea `clave=valor` en el log de Dagster y devuelve lo medido como metadatos de la materialización (duración, filas, RAM).
+- **Dónde guarda el historial.** En `data/dagster_home` (variable `DAGSTER_HOME`): corridas, eventos y los logs de cada paso en `storage/<id de la corrida>/compute_logs/`. El `.err` tiene los logs propios de Dagster y el `.out` lo que imprime el pipeline. Esa carpeta la comparten el contenedor que corre el pipeline y el que sirve la interfaz.
+- **Ejecutor en proceso.** Todos los pasos corren en el mismo proceso, necesario para compartir la conexión a DuckDB. Las etapas son secuenciales de todos modos.
+- **Sin daemon ni schedules.** El pipeline corre una vez por comando; no hay nada que programar. La telemetría de Dagster está desactivada.
+- **Los meses no se modelan como particiones de Dagster.** El par de meses lo define `meses_a_procesar` y el modelo se construye con todas las particiones curadas.
+- **Es opcional.** Dagster está en `requirements-dagster.txt`, no en `requirements.txt`. Si no está instalado o no puede abrir su carpeta, el pipeline corre sin él y lo avisa. Sin Docker, `make all` corre sin Dagster.
 
 ## Limitaciones conocidas
 
@@ -194,25 +340,30 @@ Se corrió `python run.py --mes 2025-03`, después `python run.py --mes 2025-04`
 - El salto de R02 entre 2024 y 2025 no está explicado.
 - `payment_type = 0` (Flex Fare) es más del 21 % de los viajes aceptados de marzo de 2025 y trae nulos en varias columnas. Las reglas no lo tratan aparte.
 - La idempotencia de la capa curada es de contenido, no de bytes (el hash del archivo puede cambiar al reprocesar).
-- El pico de RAM que se informa es el del proceso completo (`ru_maxrss`), no solo el de DuckDB.
-- PENDIENTE: completar al terminar el proyecto.
+- El modelo se reconstruye con todas las particiones curadas, así que su tiempo crece con la cantidad de meses acumulados en `data/curado/`.
+- El pico de RAM es una muestra (cada 0,1 s): puede perder un pico más corto que ese intervalo.
+- Dozzle y la interfaz de Dagster se probaron en Linux. El historial de Dagster es una base SQLite compartida entre dos contenedores por un volumen montado; en otros sistemas (Docker Desktop en Mac o Windows) los bloqueos de archivo podrían comportarse distinto y no se probó.
+- Los logs de Docker y de Dagster salen con la hora en UTC.
+- Sin Docker no hay Dozzle ni Dagster: el seguimiento queda en la terminal y en `data/logs/`.
 
 ## Tiempo de ejecución y memoria
 
-> PENDIENTE: medir desde un clon limpio, con descarga incluida, con `/usr/bin/time -v make all MES=2025-03` en la máquina de entrega (pico de RAM y tiempo total).
+Medición de `make all MES=2025-03` en Docker (contenedor con 6.144 MB de memoria y 16 núcleos), tal como la imprime el pipeline. Los archivos ya estaban descargados (la ingesta los omitió) y en `data/curado/` había cuatro meses, así que `modelo` se construyó sobre 13.735.570 viajes:
 
-Mediciones de `python run.py --mes 2025-03` en la máquina de desarrollo, con los archivos ya descargados (el pipeline imprime el tiempo y el pico de RAM al terminar):
+| Etapa | Duración | CPU | RAM al final | Pico de la etapa | Filas |
+|---|---:|---:|---:|---:|---:|
+| ingesta | 0,2 s | 0,2 s | 227 MB | 250 MB | 7.728.150 |
+| esquema | 0,0 s | 0,0 s | 228 MB | 252 MB | |
+| calidad | 7,7 s | 49,2 s | 2.479 MB | 2.593 MB | 7.727.885 |
+| curado | 2,4 s | 21,7 s | 2.155 MB | **2.882 MB** | 7.408.857 |
+| modelo | 9,2 s | 27,9 s | 244 MB | 2.132 MB | 14.112.035 |
+| preguntas | 0,3 s | 2,4 s | 246 MB | 578 MB | 35 |
+| **total** | **20,7 s** | **102,9 s** | | **2.882 MB** | |
 
-| Corrida | Tiempo total | Calidad | Curado | Pico de RAM |
-|---|---:|---:|---:|---:|
-| `--mes 2025-03` | 13,9 s | 11,4 s | 2,0 s | 2.711 MB |
-| `--mes 2025-04` | 11,7 s | 8,9 s | 2,2 s | 2.689 MB |
-| `--mes 2025-03` otra vez | 16,0 s | 12,9 s | 2,4 s | 2.723 MB |
+El pico de toda la corrida es de 2.882 MB, en la etapa `curado`, contra los 6.144 MB del contenedor y los 8 GB del equipo objetivo. Antes de cerrar la conexión de DuckDB antes de dbt, el pico llegaba a 4.534 MB en la etapa `modelo`.
 
-Medición parcial de la ingesta: primera corrida (descarga de unos 130 MB) alrededor de 5 s, y segunda corrida (solo verificación) alrededor de 0,5 s.
+> PENDIENTE: repetir desde un clon limpio, con la descarga y la construcción de la imagen incluidas, y anotar el tiempo total de `time make all MES=2025-03`. El pico de RAM sale del resumen que imprime el pipeline: `time` o `/usr/bin/time -v` sobre `make` no lo mide, porque en Docker el pipeline corre en otro contenedor.
 
 ## Uso de IA
 
-> PENDIENTE: revisar y ajustar este texto a lo que realmente se hizo.
-
-Se usó Claude (Anthropic) como asistente durante el desarrollo: para explicar conceptos que no se vieron en la materia (hash, reintentos con espera creciente, formato Hive, DuckDB), para proponer la estructura del proyecto y borradores de código, y para interpretar mensajes de error. El código se ejecutó, se probó y se adaptó en la propia máquina, y todo lo entregado puede explicarse en la defensa.
+> PENDIENTE: escribir esta sección con palabras propias antes de entregar: qué herramientas de IA se usaron, para qué partes del trabajo y qué se hizo para entender y verificar lo que se entregó.
