@@ -6,7 +6,7 @@ politicas:
   columna_faltante_requerida: error
   columna_faltante_opcional: usar_default
   columna_nueva_no_contratada: advertir_e_ignorar   # decisión a revisar
-  tipo_distinto: castear_si_es_seguro_sino_error
+  tipo_distinto: castear_si_es_seguro_sino_error   # seguro: ningún valor del archivo cambia al convertirlo
 
 columnas:
   - nombre: vendor_id

@@ -71,28 +71,49 @@ def leer_esquema_real(con, ruta: Path) -> dict:
 
 
 
+def nombre_en_archivo(real: dict, origen: str):
+    # Nombre con el que viene la columna en el archivo, o None si no está.
+    # TLC cambió mayúsculas entre años (airport_fee en 2022, Airport_fee desde 2023): se busca
+    # primero el nombre exacto y, si no está, uno que solo difiera en mayúsculas.
+    if origen in real:
+        return origen
+    parecidos = [nombre for nombre in real if nombre.lower() == origen.lower()]
+    if len(parecidos) > 1:
+        raise ValueError(f"la columna {origen} es ambigua en el archivo: {parecidos}")
+    return parecidos[0] if parecidos else None
+
+
 def comparar(contrato: dict, real: dict) -> dict:
     # Compara contrato y archivo. Solo describe diferencias, no decide nada.
-    origenes = {col["origen"] for col in contrato["columnas"]}
     reporte = {
         "faltantes_requeridas": [],
         "faltantes_opcionales": [],
-        "nuevas": [nombre for nombre in real if nombre not in origenes],
-        "tipos_distintos": [],     # (columna, tipo en el archivo, tipo en el contrato)
+        "nuevas": [],
+        "tipos_distintos": [],     # (columna del archivo, tipo en el archivo, tipo en el contrato)
+        "renombradas": [],         # (nombre en el contrato, nombre en el archivo): solo cambian las mayúsculas
     }
+    usadas = set()
     for col in contrato["columnas"]:
         origen = col["origen"]
-        if origen not in real:
+        nombre = nombre_en_archivo(real, origen)
+        if nombre is None:
             clave = "faltantes_requeridas" if col["requerida"] else "faltantes_opcionales"
             reporte[clave].append(origen)
-        elif real[origen] != col["tipo"]:
-            reporte["tipos_distintos"].append((origen, real[origen], col["tipo"]))
+            continue
+        usadas.add(nombre)
+        if nombre != origen:
+            reporte["renombradas"].append((origen, nombre))
+        if real[nombre] != col["tipo"]:
+            reporte["tipos_distintos"].append((nombre, real[nombre], col["tipo"]))
+    reporte["nuevas"] = [nombre for nombre in real if nombre not in usadas]
     return reporte
 
 
-def verificar_esquema(contrato: dict, real: dict, archivo: str) -> dict:
+def verificar_esquema(contrato: dict, real: dict, archivo: str, sin_perdida=None) -> dict:
     # Compara, aplica las políticas del contrato y devuelve el reporte.
     # Lanza ValueError si el esquema no se puede aceptar.
+    # sin_perdida(columna, tipo_archivo, tipo_contrato) -> bool comprueba contra los valores del archivo
+    # que una conversión que no está en CASTEOS_SEGUROS no altera ninguno (ej. BIGINT -> INTEGER).
     politicas = contrato["politicas"]
     reporte = comparar(contrato, real)
     errores = []
@@ -109,12 +130,17 @@ def verificar_esquema(contrato: dict, real: dict, archivo: str) -> dict:
     if reporte["faltantes_opcionales"]:
         print(f"  se usa el valor por defecto del contrato para: {reporte['faltantes_opcionales']}")
 
-    for origen, tipo_real, tipo_contrato in reporte["tipos_distintos"]:
-        seguro = (tipo_real, tipo_contrato) in CASTEOS_SEGUROS
-        if seguro and politicas["tipo_distinto"] != "error":
-            print(f"  se convierte {origen}: {tipo_real} -> {tipo_contrato}")
+    for origen, nombre in reporte["renombradas"]:
+        print(f"  la columna {origen} del contrato viene como {nombre} en el archivo: se usa igual")
+
+    for nombre, tipo_real, tipo_contrato in reporte["tipos_distintos"]:
+        permitido = politicas["tipo_distinto"] != "error"
+        if permitido and (tipo_real, tipo_contrato) in CASTEOS_SEGUROS:
+            print(f"  se convierte {nombre}: {tipo_real} -> {tipo_contrato}")
+        elif permitido and sin_perdida is not None and sin_perdida(nombre, tipo_real, tipo_contrato):
+            print(f"  se convierte {nombre}: {tipo_real} -> {tipo_contrato} (comprobado: ningún valor cambia)")
         else:
-            errores.append(f"{origen} viene como {tipo_real} y el contrato pide {tipo_contrato}")
+            errores.append(f"{nombre} viene como {tipo_real} y el contrato pide {tipo_contrato}")
 
     if reporte["nuevas"]:
         if politicas["columna_nueva_no_contratada"] == "error":
@@ -141,8 +167,9 @@ def construir_select(contrato: dict, real: dict, ruta: Path) -> str:
     # Arma el SELECT que lee un parquet y lo deja con los nombres y tipos del contrato.
     columnas = []
     for col in contrato["columnas"]:
-        if col["origen"] in real:
-            expresion = f'CAST("{col["origen"]}" AS {col["tipo"]})'
+        nombre = nombre_en_archivo(real, col["origen"])
+        if nombre is not None:
+            expresion = f'CAST("{nombre}" AS {col["tipo"]})'
         else:
             expresion = f'CAST({literal_sql(col.get("default_si_falta"))} AS {col["tipo"]})'
         columnas.append(f'    {expresion} AS {col["nombre"]}')
@@ -154,12 +181,32 @@ def construir_select(contrato: dict, real: dict, ruta: Path) -> str:
             f"\nFROM read_parquet('{ruta_sql}', hive_partitioning = false)")
 
 
+def convierte_sin_perdida(con, ruta: Path, columna: str, tipo_archivo: str, tipo_contrato: str) -> bool:
+    # True si convertir la columna al tipo del contrato no deja ningún valor distinto: ni uno que no
+    # entre en el tipo nuevo ni uno que cambie al convertirlo (por ejemplo 1.5 -> 1).
+    # Los nulos no cuentan, porque siguen siendo nulos.
+    ruta_sql = str(ruta).replace("'", "''")
+    try:
+        alterados = con.execute(f"""
+            SELECT count(*)
+            FROM read_parquet('{ruta_sql}', hive_partitioning = false)
+            WHERE "{columna}" IS NOT NULL
+              AND (TRY_CAST("{columna}" AS {tipo_contrato}) IS NULL
+                   OR CAST(TRY_CAST("{columna}" AS {tipo_contrato}) AS {tipo_archivo}) <> "{columna}")
+        """).fetchone()[0]
+    except Exception:       # un tipo que DuckDB no sabe comparar o convertir no se acepta
+        return False
+    return alterados == 0
+
+
 def crear_vista_unificada(con, contrato: dict, rutas: list) -> None:
     # Verifica cada archivo contra el contrato y crea la vista viajes_unificados.
     selects = []
     for ruta in rutas:
         real = leer_esquema_real(con, ruta)
-        verificar_esquema(contrato, real, ruta.name)
+        verificar_esquema(contrato, real, ruta.name,
+                          lambda columna, tipo_real, tipo_contrato, ruta=ruta:
+                          convierte_sin_perdida(con, ruta, columna, tipo_real, tipo_contrato))
         selects.append(construir_select(contrato, real, ruta))
     sql = "CREATE OR REPLACE VIEW viajes_unificados AS\n" + "\nUNION ALL\n".join(selects)
     con.execute(sql)
