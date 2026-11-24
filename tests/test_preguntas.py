@@ -100,6 +100,43 @@ def test_f_variacion_de_viajes_y_de_tarifa_media(respuestas):
     assert respuestas["f"] == [(4, 10, 150.0, 20.0, 24.0, 20.0, 10, 10)]
 
 
+def test_g_zona_de_origen_con_mas_viajes_por_tipo_de_pago(respuestas):
+    assert respuestas["g"] == [
+        (2024, 1, "Tarjeta de crédito", "JFK Airport", "Queens", 1, 3, 33.3),        # empate a 1 viaje: gana el nombre que va primero
+        (2024, 2, "Efectivo", "Zona Dos", "Bronx", 1, 1, 100.0),
+        (2025, 0, "Flex Fare", "Zona Tres", "Queens", 1, 1, 100.0),
+        (2025, 1, "Tarjeta de crédito", "Zona Uno", "Manhattan", 3, 6, 50.0),
+        (2025, 2, "Efectivo", "Zona Dos", "Bronx", 1, 2, 50.0),
+        (2025, 3, "Sin cargo", "Zona Tres", "Queens", 1, 1, 100.0),
+    ]
+
+
+def test_h1_pares_de_zonas_con_mas_propina_en_monto(respuestas):
+    assert respuestas["h1"] == [
+        (2024, 1, "Zona Dos", "Zona Tres", 4.0, 1, 2, 4.0),
+        (2024, 2, "JFK Airport", "Zona Uno", 3.0, 1, 1, 3.0),
+        (2024, 3, "Zona Uno", "Zona Dos", 1.0, 1, 1, 1.0),
+        (2025, 1, "JFK Airport", "LaGuardia Airport", 6.0, 1, 1, 6.0),
+        (2025, 2, "JFK Airport", "Zona Uno", 5.0, 1, 1, 5.0),
+        (2025, 3, "Zona Uno", "LaGuardia Airport", 4.0, 1, 1, 4.0),                   # empate en 4.0 con el puesto siguiente
+        (2025, 4, "Zona Uno", "Zona Dos", 4.0, 2, 2, 2.0),
+        (2025, 5, "Zona Dos", "Zona Tres", 3.0, 1, 1, 3.0),
+    ]
+
+
+def test_h2_pares_de_zonas_con_mas_viajes_con_propina(respuestas):
+    assert respuestas["h2"] == [
+        (2024, 1, "JFK Airport", "Zona Uno", 1, 1, 100.0, 3.0),
+        (2024, 2, "Zona Dos", "Zona Tres", 1, 2, 50.0, 4.0),                          # un viaje de dos tuvo propina
+        (2024, 3, "Zona Uno", "Zona Dos", 1, 1, 100.0, 1.0),
+        (2025, 1, "Zona Uno", "Zona Dos", 2, 2, 100.0, 4.0),
+        (2025, 2, "JFK Airport", "LaGuardia Airport", 1, 1, 100.0, 6.0),
+        (2025, 3, "JFK Airport", "Zona Uno", 1, 1, 100.0, 5.0),
+        (2025, 4, "Zona Dos", "Zona Tres", 1, 1, 100.0, 3.0),
+        (2025, 5, "Zona Uno", "LaGuardia Airport", 1, 1, 100.0, 4.0),                 # el par sin propina (3 -> 3) no entra
+    ]
+
+
 def test_una_pregunta_sin_resultados_es_un_error(raiz):
     with pytest.raises(RuntimeError, match="no devolvió filas"):
         preguntas.correr_preguntas(2025, 4, raiz)                                  # abril no está en el modelo
@@ -112,4 +149,4 @@ def test_el_informe_guarda_cada_consulta_con_su_resultado(raiz):
     texto = ruta.read_text(encoding="utf-8")
     assert "# Preguntas de negocio: 2025-03 contra 2024-03" in texto
     assert "`$anio` = 2025, `$mes` = 3, `$min_viajes_zona` = 1" in texto
-    assert texto.count("```sql") == 7 and "| Zona Uno | Manhattan | 4 | 1 | 3 | 300.0 |" in texto
+    assert texto.count("```sql") == 10 and "| Zona Uno | Manhattan | 4 | 1 | 3 | 300.0 |" in texto

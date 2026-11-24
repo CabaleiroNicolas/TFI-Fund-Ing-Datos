@@ -291,3 +291,172 @@ where ant.anio = $anio - 1 and act.anio = $anio
 - No parece un cambio de composición: la distancia media casi no cambió (de 3,36 a 3,33 millas).
 - La baja viene de los viajes Flex Fare (`payment_type = 0`) con `fare_amount` negativo: 14.187 en marzo de 2024 (0,4 % de los aceptados) y 128.456 en marzo de 2025 (3,2 %), con tarifa media de −$1,44 y −$4,27. Se aceptaron porque R05 solo mira `total_amount`, que es positivo.
 - Sin esos viajes la tarifa media pasa de $19,15 a $19,16 (+0,08 %). No se excluyeron del cálculo y no se determinó a qué corresponde la tarifa negativa.
+
+---
+
+Las tres consultas siguientes no son del enunciado: se agregaron como análisis adicional sobre zonas y propinas. Salen del mismo `make all MES=2025-03`.
+
+## g) Zona de origen con más viajes por tipo de pago
+
+| anio | payment_type | tipo_de_pago | zona | borough | viajes | viajes_del_tipo | porcentaje_del_tipo |
+|---|---|---|---|---|---|---|---|
+| 2024 | 0 | Flex Fare | East Village | Manhattan | 16985 | 379418 | 4.5 |
+| 2024 | 1 | Tarjeta de crédito | Midtown Center | Manhattan | 124870 | 2575266 | 4.8 |
+| 2024 | 2 | Efectivo | JFK Airport | Queens | 33222 | 457678 | 7.3 |
+| 2024 | 3 | Sin cargo | JFK Airport | Queens | 1173 | 12650 | 9.3 |
+| 2024 | 4 | Disputa | JFK Airport | Queens | 3055 | 28551 | 10.7 |
+| 2025 | 0 | Flex Fare | East Village | Manhattan | 33041 | 854427 | 3.9 |
+| 2025 | 1 | Tarjeta de crédito | Midtown Center | Manhattan | 135396 | 2663793 | 5.1 |
+| 2025 | 2 | Efectivo | JFK Airport | Queens | 29029 | 377925 | 7.7 |
+| 2025 | 3 | Sin cargo | JFK Airport | Queens | 1356 | 14279 | 9.5 |
+| 2025 | 4 | Disputa | JFK Airport | Queens | 6351 | 44870 | 14.2 |
+
+Consulta (`sql/preguntas/g_zona_de_origen_dominante_por_tipo_de_pago.sql`):
+
+```sql
+-- g) Por tipo de pago, la zona de origen con más viajes, en los dos meses.
+with por_zona as (
+    select
+        d.anio,
+        f.payment_type,
+        f.pu_zona_id,
+        count(*) as viajes
+    from fact_trips as f
+    join dim_date as d on d.fecha = f.fecha
+    where d.mes = $mes and d.anio in ($anio, $anio - 1)
+    group by d.anio, f.payment_type, f.pu_zona_id
+),
+
+con_total as (
+    select
+        *,
+        sum(viajes) over (partition by anio, payment_type) as viajes_del_tipo
+    from por_zona
+)
+
+select
+    c.anio,
+    c.payment_type,
+    case c.payment_type
+        when 0 then 'Flex Fare'
+        when 1 then 'Tarjeta de crédito'
+        when 2 then 'Efectivo'
+        when 3 then 'Sin cargo'
+        when 4 then 'Disputa'
+        when 5 then 'Desconocido'
+        when 6 then 'Viaje anulado'
+    end as tipo_de_pago,
+    z.zona,
+    z.borough,
+    c.viajes,
+    c.viajes_del_tipo,
+    round(100.0 * c.viajes / c.viajes_del_tipo, 1) as porcentaje_del_tipo
+from con_total as c
+join dim_zone as z on z.zona_id = c.pu_zona_id
+qualify row_number() over (partition by c.anio, c.payment_type order by c.viajes desc, z.zona) = 1
+order by c.anio, c.payment_type
+```
+
+**Interpretación:** En los dos meses predomina la misma zona en cada tipo de pago: Midtown Center con tarjeta (135.396 viajes en 2025, 5,1 % de los de ese tipo), East Village con Flex Fare (33.041) y el JFK en efectivo, sin cargo y disputa; en las disputas el JFK pesa más en 2025 (14,2 %) que en 2024 (10,7 %).
+
+## h1) Combinaciones de zona de origen y destino con más propina en monto
+
+| anio | puesto | zona_origen | zona_destino | propina_total | viajes_con_propina | viajes | propina_media_con_propina |
+|---|---|---|---|---|---|---|---|
+| 2024 | 1 | JFK Airport | Times Sq/Theatre District | 76205.23 | 4998 | 7275 | 15.25 |
+| 2024 | 2 | LaGuardia Airport | Times Sq/Theatre District | 74209.25 | 5892 | 6892 | 12.59 |
+| 2024 | 3 | JFK Airport | Outside of NYC | 68213.29 | 3537 | 5731 | 19.29 |
+| 2024 | 4 | Times Sq/Theatre District | LaGuardia Airport | 49933.46 | 3970 | 4616 | 12.58 |
+| 2024 | 5 | JFK Airport | Midtown South | 45908.44 | 3100 | 4054 | 14.81 |
+| 2025 | 1 | LaGuardia Airport | Times Sq/Theatre District | 72450.62 | 5748 | 6624 | 12.6 |
+| 2025 | 2 | JFK Airport | Times Sq/Theatre District | 71582.95 | 4673 | 6561 | 15.32 |
+| 2025 | 3 | JFK Airport | Outside of NYC | 63880.76 | 3464 | 5636 | 18.44 |
+| 2025 | 4 | Times Sq/Theatre District | LaGuardia Airport | 51530.77 | 4023 | 4712 | 12.81 |
+| 2025 | 5 | Upper East Side South | Upper East Side North | 47893.31 | 19621 | 23066 | 2.44 |
+
+Consulta (`sql/preguntas/h1_pares_de_zonas_con_mas_propina_en_monto.sql`):
+
+```sql
+-- h1) Las 5 combinaciones de zona de origen y de destino donde más propina se dejó en monto (suma de tip_amount), en los dos meses.
+with por_par as (
+    select
+        d.anio,
+        f.pu_zona_id,
+        f.do_zona_id,
+        sum(f.tip_amount) as propina_total,
+        count(*) filter (where f.tip_amount > 0) as viajes_con_propina,
+        count(*) as viajes
+    from fact_trips as f
+    join dim_date as d on d.fecha = f.fecha
+    where d.mes = $mes and d.anio in ($anio, $anio - 1)
+    group by d.anio, f.pu_zona_id, f.do_zona_id
+)
+
+select
+    p.anio,
+    row_number() over (partition by p.anio order by p.propina_total desc, zo.zona, zd.zona) as puesto,
+    zo.zona as zona_origen,
+    zd.zona as zona_destino,
+    round(p.propina_total, 2) as propina_total,
+    p.viajes_con_propina,
+    p.viajes,
+    round(p.propina_total / nullif(p.viajes_con_propina, 0), 2) as propina_media_con_propina
+from por_par as p
+join dim_zone as zo on zo.zona_id = p.pu_zona_id
+join dim_zone as zd on zd.zona_id = p.do_zona_id
+qualify row_number() over (partition by p.anio order by p.propina_total desc, zo.zona, zd.zona) <= 5
+order by p.anio, puesto
+```
+
+**Interpretación:** Por monto dominan los viajes entre los aeropuertos y Times Sq/Theatre District (en 2025, LaGuardia a Times Sq: $72.451 y JFK a Times Sq: $71.583): son unos 6.600 viajes cada uno, con propina media alta ($12,60 y $15,32 por viaje con propina). La propina solo se registra con tarjeta (97 % de los viajes con propina), así que el ranking refleja a quienes pagan con tarjeta.
+
+## h2) Combinaciones de zona de origen y destino con más viajes con propina
+
+| anio | puesto | zona_origen | zona_destino | viajes_con_propina | viajes | porcentaje_con_propina | propina_total |
+|---|---|---|---|---|---|---|---|
+| 2024 | 1 | Upper East Side South | Upper East Side North | 17744 | 21177 | 83.8 | 43879.41 |
+| 2024 | 2 | Upper East Side North | Upper East Side South | 15574 | 18834 | 82.7 | 39227.05 |
+| 2024 | 3 | Upper East Side North | Upper East Side North | 11922 | 15012 | 79.4 | 25518.76 |
+| 2024 | 4 | Upper East Side South | Upper East Side South | 10979 | 14227 | 77.2 | 24845.85 |
+| 2024 | 5 | Midtown Center | Upper East Side South | 8512 | 10451 | 81.4 | 23128.55 |
+| 2025 | 1 | Upper East Side South | Upper East Side North | 19621 | 23066 | 85.1 | 47893.31 |
+| 2025 | 2 | Upper East Side North | Upper East Side South | 16544 | 19818 | 83.5 | 41302.78 |
+| 2025 | 3 | Upper East Side North | Upper East Side North | 12380 | 15251 | 81.2 | 26352.48 |
+| 2025 | 4 | Upper East Side South | Upper East Side South | 12068 | 15206 | 79.4 | 27512.74 |
+| 2025 | 5 | Midtown Center | Upper East Side South | 9230 | 11062 | 83.4 | 26341.67 |
+
+Consulta (`sql/preguntas/h2_pares_de_zonas_con_mas_viajes_con_propina.sql`):
+
+```sql
+-- h2) Las 5 combinaciones de zona de origen y de destino con más viajes con propina (tip_amount mayor a 0), en los dos meses.
+with por_par as (
+    select
+        d.anio,
+        f.pu_zona_id,
+        f.do_zona_id,
+        count(*) filter (where f.tip_amount > 0) as viajes_con_propina,
+        count(*) as viajes,
+        sum(f.tip_amount) as propina_total
+    from fact_trips as f
+    join dim_date as d on d.fecha = f.fecha
+    where d.mes = $mes and d.anio in ($anio, $anio - 1)
+    group by d.anio, f.pu_zona_id, f.do_zona_id
+)
+
+select
+    p.anio,
+    row_number() over (partition by p.anio order by p.viajes_con_propina desc, zo.zona, zd.zona) as puesto,
+    zo.zona as zona_origen,
+    zd.zona as zona_destino,
+    p.viajes_con_propina,
+    p.viajes,
+    round(100.0 * p.viajes_con_propina / p.viajes, 1) as porcentaje_con_propina,
+    round(p.propina_total, 2) as propina_total
+from por_par as p
+join dim_zone as zo on zo.zona_id = p.pu_zona_id
+join dim_zone as zd on zd.zona_id = p.do_zona_id
+qualify row_number() over (partition by p.anio order by p.viajes_con_propina desc, zo.zona, zd.zona) <= 5
+order by p.anio, puesto
+```
+
+**Interpretación:** Por cantidad dominan los viajes cortos dentro del Upper East Side (de Upper East Side South a North: 19.621 viajes con propina, el 85,1 % de sus viajes en 2025): mucha frecuencia y propina chica (unos $2,44 por viaje con propina). Contrasta con h1: el monto lo ponen los viajes largos y caros y la cantidad los cortos y frecuentes.

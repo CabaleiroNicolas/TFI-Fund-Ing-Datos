@@ -113,7 +113,8 @@ def test_una_corrida_completa_deja_las_metricas_de_cada_etapa(proyecto):
     assert fines["calidad"]["cuarentena"] == 2 * (VIAJES // 50)             # los viajes de 0 minutos
     assert fines["curado"]["filas"] == fines["calidad"]["aceptadas"]
     assert fines["modelo"]["modelos"] == 4 and fines["modelo"]["tests_dbt"] == 15
-    assert fines["preguntas"]["consultas"] == 7 and fines["preguntas"]["filas"] >= 7     # cada consulta devuelve algo
+    consultas = len(list((RAIZ / "sql" / "preguntas").glob("*.sql")))                        # una por archivo
+    assert fines["preguntas"]["consultas"] == consultas and fines["preguntas"]["filas"] >= consultas     # cada consulta devuelve algo
 
 
 def test_la_pantalla_muestra_lineas_clave_valor_y_el_resumen(proyecto):

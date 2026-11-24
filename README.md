@@ -249,7 +249,7 @@ Se corrió `python run.py --mes 2025-03`, después `--mes 2025-04` y después ot
 
 ### Preguntas de negocio
 
-- Hay una consulta por pregunta en `sql/preguntas/`: `a`, `b`, `c1`, `c2`, `d`, `e` y `f`. Se ejecutan sobre `data/modelo.duckdb`, que se abre solo para lectura.
+- Hay una consulta por pregunta en sql/preguntas/: las del enunciado (a, b, c1, c2, d, e y f) y tres propias sobre zonas y propinas (g, h1 y h2). Se ejecutan sobre `data/modelo.duckdb`, que se abre solo para lectura.
 - Cada consulta recibe solo los parámetros que usa:
 
   | Parámetro | Valor | Dónde se usa |
@@ -258,6 +258,7 @@ Se corrió `python run.py --mes 2025-03`, después `--mes 2025-04` y después ot
   | `$min_viajes_zona` | 1000 | c2: una zona con menos viajes en el mes no entra al ranking de proporciones, porque con pocos viajes la proporción no dice nada |
 
 - Una pregunta sin resultados es un error, no una respuesta vacía.
+- Las tres propias: g da la zona de origen con más viajes de cada tipo de pago (si dos zonas empatan, gana la que va primero por nombre). h1 y h2 ordenan los pares (zona de origen, zona de destino) y muestran los 5 primeros de cada mes: h1 por la suma de tip_amount y h2 por la cantidad de viajes con tip_amount > 0. La propina solo se registra con tarjeta (el 97 % de los viajes con propina), así que esos rankings reflejan a quienes pagan con tarjeta.
 - Las respuestas se imprimen al final de la etapa y cada corrida guarda su informe completo (consulta, parámetros y resultado) en `data/resultados/AAAA-MM.md`. Las de marzo de 2025, con su interpretación, están en `RESULTADOS.md`.
 
 ## Docker y Dozzle
